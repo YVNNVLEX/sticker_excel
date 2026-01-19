@@ -2,6 +2,9 @@ __pycache__/
 *.pyc
 *.pyo
 labels_output/
+*.db
+~$*.xlsx
+web/data/
 web/node_modules/
 web/.next/
 web/out/

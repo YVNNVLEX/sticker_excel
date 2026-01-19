@@ -15,6 +15,13 @@ type SheetSummary = {
   count: number;
 };
 
+type OdooConfig = {
+  baseUrl: string;
+  db: string;
+  username: string;
+  password: string;
+};
+
 type JsBarcodeFn = (
   element: SVGSVGElement,
   value: string,
@@ -144,6 +151,21 @@ function splitInput(text: string) {
     .split(/[;,]/g)
     .map((part) => part.trim())
     .filter(Boolean);
+}
+
+async function readJsonResponse(response: Response) {
+  const text = await response.text();
+  if (!text) {
+    return {};
+  }
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return {
+      message: `Reponse non JSON (${response.status})`,
+      raw: text.slice(0, 200),
+    };
+  }
 }
 
 function buildMap(records: RecordItem[], key: "ean" | "article") {
@@ -306,6 +328,17 @@ export default function Home() {
   const [printOffsetY, setPrintOffsetY] = useState(0);
   const [printQueue, setPrintQueue] = useState<RecordItem[]>([]);
   const [printRenderCount, setPrintRenderCount] = useState(0);
+  const [dataSource, setDataSource] = useState<"excel" | "odoo">("excel");
+  const [odooModalOpen, setOdooModalOpen] = useState(false);
+  const [odooConnected, setOdooConnected] = useState(false);
+  const [odooLoading, setOdooLoading] = useState(false);
+  const [odooError, setOdooError] = useState("");
+  const [odooConfig, setOdooConfig] = useState<OdooConfig>({
+    baseUrl: "",
+    db: "",
+    username: "",
+    password: "",
+  });
   const sheetRecordsRef = useRef<Record<string, RecordItem[]>>({});
   const printRenderedRef = useRef<Set<string>>(new Set());
 
@@ -386,6 +419,33 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    const loadLocal = async () => {
+      try {
+        const response = await fetch("/api/local-db/records", {
+          cache: "no-store",
+        });
+        if (!response.ok) {
+          return;
+        }
+        const data = (await response.json()) as { records?: RecordItem[] };
+        if (data.records && data.records.length) {
+          setRecords(data.records);
+          setFiltered([]);
+          setSelectedIndex(null);
+          setFileName("Base locale (sqlite)");
+          setSheetOptions([]);
+          setSelectedSheet("");
+          setDataSource("excel");
+          setStatus(`Base locale chargee: ${data.records.length} lignes`);
+        }
+      } catch {
+        // ignore local db errors
+      }
+    };
+    loadLocal();
+  }, []);
+
+  useEffect(() => {
     if (!printQueue.length) {
       printRenderedRef.current = new Set();
       setPrintRenderCount(0);
@@ -425,8 +485,14 @@ export default function Home() {
       setFiltered([]);
       setSelectedIndex(null);
       setFileName(file.name);
+      setDataSource((prev) => (prev === "odoo" ? "odoo" : "excel"));
       setStatus(
         `Charge: ${(sheetRecords[defaultSheet] || []).length} lignes (${defaultSheet})`,
+      );
+      const formData = new FormData();
+      formData.append("file", file);
+      fetch("/api/local-db/import", { method: "POST", body: formData }).catch(
+        () => undefined,
       );
     } catch (error) {
       const message =
@@ -437,6 +503,10 @@ export default function Home() {
   };
 
   const runSearch = () => {
+    if (dataSource === "odoo") {
+      searchOdoo();
+      return;
+    }
     if (!records.length) {
       setStatus("Chargez un fichier d abord");
       return;
@@ -485,6 +555,91 @@ export default function Home() {
     setFiltered([]);
     setSelectedIndex(null);
     setStatus("Recherche effacee");
+  };
+
+  const testOdoo = async () => {
+    setOdooLoading(true);
+    setOdooError("");
+    try {
+      const response = await fetch("/api/odoo/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(odooConfig),
+      });
+      const data = await readJsonResponse(response);
+      if (!response.ok || !data.ok) {
+        const message =
+          typeof data.message === "string"
+            ? data.message
+            : "Connexion impossible";
+        throw new Error(message);
+      }
+      setOdooConnected(true);
+      setDataSource("odoo");
+      setStatus("Connexion Odoo reussie");
+      return true;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Connexion impossible";
+      setOdooConnected(false);
+      setOdooError(message);
+      setStatus("Connexion Odoo echouee");
+      return false;
+    } finally {
+      setOdooLoading(false);
+    }
+  };
+
+  const connectOdoo = async () => {
+    const ok = await testOdoo();
+    if (ok) {
+      setOdooModalOpen(false);
+    }
+  };
+
+  const searchOdoo = async () => {
+    const parts = splitInput(searchInput);
+    if (!parts.length) {
+      setStatus("Entrez une valeur de recherche");
+      return;
+    }
+    if (!odooConnected) {
+      setStatus("Odoo non connecte");
+      return;
+    }
+    setOdooLoading(true);
+    setStatus("Recherche Odoo...");
+    try {
+      const response = await fetch("/api/odoo/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          baseUrl: odooConfig.baseUrl,
+          db: odooConfig.db,
+          username: odooConfig.username,
+          password: odooConfig.password,
+          searchType,
+          terms: parts,
+        }),
+      });
+      const data = await readJsonResponse(response);
+      if (!response.ok) {
+        const message =
+          typeof data.message === "string" ? data.message : "Erreur Odoo";
+        throw new Error(message);
+      }
+      const results = (data.records || []) as RecordItem[];
+      setFiltered(results);
+      setSelectedIndex(results.length ? 0 : null);
+      setStatus(results.length ? `Resultats: ${results.length}` : "Aucun resultat");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erreur Odoo";
+      setStatus(message);
+      setFiltered([]);
+      setSelectedIndex(null);
+    } finally {
+      setOdooLoading(false);
+    }
   };
 
   const handleSheetChange = (name: string) => {
@@ -563,6 +718,13 @@ export default function Home() {
                   }
                 }}
               />
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => setOdooModalOpen(true)}
+              >
+                Se connecter a Odoo
+              </button>
             </div>
             {sheetOptions.length > 1 ? (
               <div className="sheet-row">
@@ -580,6 +742,12 @@ export default function Home() {
                 </select>
               </div>
             ) : null}
+            <div className="odoo-status">
+              <span className="odoo-label">Odoo</span>
+              <span className={`pill ${odooConnected ? "pill--ok" : "pill--ghost"}`}>
+                {odooConnected ? "Connecte" : "Non connecte"}
+              </span>
+            </div>
             <p className="hint">
               Colonnes attendues: R (Article), T (EAN), AM (Prix Club), AN (Prix
               Public).
@@ -592,6 +760,23 @@ export default function Home() {
               <span className="pill pill--ghost">EAN ou Article</span>
             </div>
             <div className="search-row">
+              <label className="sr-only" htmlFor="source-select">
+                Source
+              </label>
+              <select
+                id="source-select"
+                value={dataSource}
+                onChange={(event) =>
+                  setDataSource(event.target.value as "excel" | "odoo")
+                }
+              >
+                <option value="excel" disabled={!records.length}>
+                  Excel
+                </option>
+                <option value="odoo" disabled={!odooConnected}>
+                  Odoo
+                </option>
+              </select>
               <label className="sr-only" htmlFor="search-type">
                 Type
               </label>
@@ -820,6 +1005,101 @@ export default function Home() {
           );
         })}
       </div>
+
+      {odooModalOpen ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => setOdooModalOpen(false)}
+        >
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Connexion Odoo"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal__header">
+              <h3>Connexion Odoo</h3>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => setOdooModalOpen(false)}
+              >
+                Fermer
+              </button>
+            </div>
+            <div className="modal__body">
+              <div className="field">
+                <label htmlFor="odoo-url">URL Odoo</label>
+                <input
+                  id="odoo-url"
+                  type="text"
+                  value={odooConfig.baseUrl}
+                  onChange={(event) =>
+                    setOdooConfig((prev) => ({
+                      ...prev,
+                      baseUrl: event.target.value,
+                    }))
+                  }
+                  placeholder="https://odoo.mondomaine.com"
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="odoo-db">Base de donnees</label>
+                <input
+                  id="odoo-db"
+                  type="text"
+                  value={odooConfig.db}
+                  onChange={(event) =>
+                    setOdooConfig((prev) => ({
+                      ...prev,
+                      db: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="odoo-user">Utilisateur</label>
+                <input
+                  id="odoo-user"
+                  type="text"
+                  value={odooConfig.username}
+                  onChange={(event) =>
+                    setOdooConfig((prev) => ({
+                      ...prev,
+                      username: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="odoo-pass">Mot de passe</label>
+                <input
+                  id="odoo-pass"
+                  type="password"
+                  value={odooConfig.password}
+                  onChange={(event) =>
+                    setOdooConfig((prev) => ({
+                      ...prev,
+                      password: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+              {odooError ? <div className="modal__error">{odooError}</div> : null}
+            </div>
+            <div className="modal__actions">
+              <button type="button" className="ghost" onClick={testOdoo}>
+                Tester
+              </button>
+              <button type="button" onClick={connectOdoo} disabled={odooLoading}>
+                {odooLoading ? "Connexion..." : "Connecter"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <style>{`@page { size: ${labelWidth}mm ${labelHeight}mm; margin: 0; }
 @media print { html, body { width: ${labelWidth}mm; height: ${labelHeight}mm; margin: 0; } }`}</style>

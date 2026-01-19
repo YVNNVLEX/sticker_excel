@@ -219,6 +219,23 @@ select {
   align-items: center;
 }
 
+.odoo-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.odoo-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.pill--ok {
+  background: rgba(29, 139, 108, 0.18);
+  color: #0f3c2f;
+}
+
 .sheet-row {
   display: flex;
   flex-wrap: wrap;
@@ -416,6 +433,57 @@ td.price {
 
 #print-area {
   display: none;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 10, 12, 0.55);
+  display: grid;
+  place-items: center;
+  z-index: 50;
+  padding: 24px;
+}
+
+.modal {
+  width: min(560px, 92vw);
+  background: var(--card-strong);
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modal__body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.modal__error {
+  grid-column: 1 / -1;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(214, 40, 40, 0.12);
+  color: #7a0c0c;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .print-page {
