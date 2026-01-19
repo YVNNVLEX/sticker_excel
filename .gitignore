@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+labels_output/
+web/node_modules/
+web/.next/
+web/out/

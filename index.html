@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Etiquettes UI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="backdrop" aria-hidden="true"></div>
+    <header class="hero">
+      <div class="hero__content">
+        <div class="kicker">Etiquettes UI</div>
+        <h1>Recherche rapide, etiquette claire, impression directe.</h1>
+        <p>
+          Chargez un fichier Excel, recherchez par EAN ou Article, previsualisez
+          l etiquette et imprimez.
+        </p>
+      </div>
+      <div class="hero__status" id="status">En attente de fichier</div>
+    </header>
+
+    <main class="layout">
+      <section class="panel">
+        <div class="card">
+          <div class="card__header">
+            <h2>1. Charger le fichier</h2>
+            <span class="pill" id="file-pill">Aucun fichier</span>
+          </div>
+          <div class="file-row">
+            <input id="file-input" type="file" accept=".xlsx" />
+            <button id="load-demo" type="button">Utiliser ORCHESTRA_MARGE.xlsx</button>
+          </div>
+          <p class="hint">
+            Colonnes utilisees: R (Article), T (EAN Composant UVC), AM (Prix
+            Club), AN (Prix Public).
+          </p>
+        </div>
+
+        <div class="card">
+          <div class="card__header">
+            <h2>2. Recherche</h2>
+            <span class="pill pill--ghost">EAN ou Article</span>
+          </div>
+          <div class="search-row">
+            <label class="sr-only" for="search-type">Type</label>
+            <select id="search-type">
+              <option value="EAN">EAN</option>
+              <option value="Article">Article</option>
+            </select>
+            <input
+              id="search-input"
+              type="text"
+              placeholder="3393456827961, CFIFQ7#ROC01"
+            />
+            <button id="search-btn" type="button">Chercher</button>
+            <button id="clear-btn" type="button" class="ghost">Effacer</button>
+          </div>
+          <p class="hint">
+            Plusieurs valeurs possibles, separees par une virgule.
+          </p>
+        </div>
+
+        <div class="card">
+          <div class="card__header">
+            <h2>3. Resultats</h2>
+            <span class="pill" id="results-count">0</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Article</th>
+                  <th>EAN</th>
+                  <th>Prix Club</th>
+                  <th>Prix Public</th>
+                </tr>
+              </thead>
+              <tbody id="results-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card actions">
+          <button id="print-selected" type="button">Imprimer selection</button>
+          <button id="print-all" type="button" class="ghost">Imprimer tout</button>
+        </div>
+      </section>
+
+      <section class="preview">
+        <div class="card card--full">
+          <div class="card__header">
+            <h2>Preview etiquette</h2>
+            <span class="pill pill--ghost">Centre, sans intitules</span>
+          </div>
+          <div class="size-row">
+            <div class="field">
+              <label for="label-width">Largeur (mm)</label>
+              <input id="label-width" type="number" min="10" step="1" value="50" />
+            </div>
+            <div class="field">
+              <label for="label-height">Hauteur (mm)</label>
+              <input id="label-height" type="number" min="10" step="1" value="25" />
+            </div>
+            <div class="field field--range">
+              <label for="preview-scale">Zoom preview</label>
+              <input id="preview-scale" type="range" min="1" max="6" step="1" value="2" />
+            </div>
+          </div>
+
+          <div class="preview-frame">
+            <div class="label" id="label-preview" role="img" aria-label="Preview etiquette">
+              <div class="label__article" id="label-article">-</div>
+              <div class="label__price" id="label-price">-</div>
+              <div class="label__public" id="label-public">-</div>
+              <svg class="barcode" id="label-barcode"></svg>
+            </div>
+          </div>
+
+          <div class="note">
+            Astuce: cliquez sur une ligne de resultat pour mettre a jour la
+            preview.
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div id="print-area" aria-hidden="true"></div>
+    <style id="print-style"></style>
+
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"
+      defer
+    ></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js" defer></script>
+    <script src="app.js" defer></script>
+  </body>
+</html>
