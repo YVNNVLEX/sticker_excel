@@ -143,6 +143,15 @@ function formatPrice(value: unknown) {
   return text || "-";
 }
 
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function splitInput(text: string) {
   if (!text) {
     return [];
@@ -315,6 +324,7 @@ export default function Home() {
   const [fileName, setFileName] = useState("Aucun fichier");
   const [sheetOptions, setSheetOptions] = useState<SheetSummary[]>([]);
   const [selectedSheet, setSelectedSheet] = useState("");
+  const [sheetLabel, setSheetLabel] = useState("");
   const [printerStatus, setPrinterStatus] = useState<PrinterStatus>({
     available: false,
     status: "unknown",
@@ -427,16 +437,31 @@ export default function Home() {
         if (!response.ok) {
           return;
         }
-        const data = (await response.json()) as { records?: RecordItem[] };
+        const data = (await response.json()) as {
+          records?: RecordItem[];
+          meta?: { source?: string; defaultFile?: string; sheet?: string };
+        };
         if (data.records && data.records.length) {
+          const source = (data.meta?.source || "").trim();
+          const defaultFile = (data.meta?.defaultFile || "ORCHESTRA_MARGE.xlsx").trim();
+          const sheet = (data.meta?.sheet || "").trim();
+          const displayName =
+            !source || source === "excel-default" || source === "excel"
+              ? defaultFile
+              : source;
           setRecords(data.records);
           setFiltered([]);
           setSelectedIndex(null);
-          setFileName("Base locale (sqlite)");
+          setFileName(displayName);
+          setSheetLabel(sheet);
           setSheetOptions([]);
           setSelectedSheet("");
           setDataSource("excel");
-          setStatus(`Base locale chargee: ${data.records.length} lignes`);
+          setStatus(
+            sheet
+              ? `Charge: ${data.records.length} lignes (${displayName} / ${sheet})`
+              : `Charge: ${data.records.length} lignes (${displayName})`,
+          );
         }
       } catch {
         // ignore local db errors
@@ -481,6 +506,7 @@ export default function Home() {
       sheetRecordsRef.current = sheetRecords;
       setSheetOptions(summaries);
       setSelectedSheet(defaultSheet);
+      setSheetLabel(defaultSheet);
       setRecords(sheetRecords[defaultSheet] || []);
       setFiltered([]);
       setSelectedIndex(null);
@@ -491,6 +517,7 @@ export default function Home() {
       );
       const formData = new FormData();
       formData.append("file", file);
+      formData.append("sheet", defaultSheet);
       fetch("/api/local-db/import", { method: "POST", body: formData }).catch(
         () => undefined,
       );
@@ -645,6 +672,7 @@ export default function Home() {
   const handleSheetChange = (name: string) => {
     const nextRecords = sheetRecordsRef.current[name] || [];
     setSelectedSheet(name);
+    setSheetLabel(name);
     setRecords(nextRecords);
     setFiltered([]);
     setSelectedIndex(null);
@@ -669,6 +697,105 @@ export default function Home() {
     printRenderedRef.current = new Set();
     setPrintRenderCount(0);
     setPrintQueue(filtered);
+  };
+
+  const downloadLabels = async () => {
+    const selection =
+      selectedIndex != null && filtered[selectedIndex]
+        ? [filtered[selectedIndex]]
+        : filtered;
+    if (!selection.length) {
+      setStatus("Aucun resultat");
+      return;
+    }
+    setStatus(`Generation etiquettes (${selection.length})...`);
+    try {
+      const mod = await import("jsbarcode");
+      const JsBarcode =
+        (mod as unknown as { default?: JsBarcodeFn }).default ??
+        (mod as unknown as JsBarcodeFn);
+      const barcodeDataUrl = (value: string) => {
+        const normalized = toEan13(value);
+        if (!normalized) {
+          return "";
+        }
+        const svg = document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          "svg",
+        );
+        try {
+          JsBarcode(svg, normalized, {
+            format: "EAN13",
+            height: printBarcode.heightPx,
+            width: printBarcode.widthPx,
+            displayValue: false,
+            margin: 0,
+          });
+        } catch {
+          return "";
+        }
+        const xml = new XMLSerializer().serializeToString(svg);
+        return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(xml)}`;
+      };
+
+      const pages = selection
+        .map((record) => {
+          const article = escapeHtml(record.article || "-");
+          const prixClub = escapeHtml(formatPrice(record.prixClub));
+          const prixPublic = escapeHtml(formatPrice(record.prixPublic));
+          const barcode = barcodeDataUrl(record.ean || "");
+          const barcodeHtml = barcode
+            ? `<img class="barcode" src="${barcode}" alt="" />`
+            : `<div class="barcode"></div>`;
+          return `
+<div class="print-page">
+  <div class="label" style="transform: translate(${printOffsetX}mm, ${printOffsetY}mm);">
+    <div class="label__article">${article}</div>
+    <div class="label__price">${prixClub}</div>
+    <div class="label__public">${prixPublic}</div>
+    ${barcodeHtml}
+  </div>
+</div>`;
+        })
+        .join("");
+
+      const html = `<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Etiquettes</title>
+    <style>
+      * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      html, body { margin: 0; padding: 0; }
+      @page { size: ${labelWidth}mm ${labelHeight}mm; margin: 0; }
+      .print-page { width: ${labelWidth}mm; height: ${labelHeight}mm; page-break-after: always; break-after: page; position: relative; overflow: hidden; }
+      .label { width: ${labelWidth}mm; height: ${labelHeight}mm; transform-origin: top left; border: 1.5px solid #111; border-radius: 0; padding: 4px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 4px; font-family: Arial, sans-serif; }
+      .label__article { font-weight: 700; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; }
+      .label__price { font-weight: 700; font-size: 18px; color: #d62828; }
+      .label__public { font-size: 12px; font-weight: 600; }
+      .barcode { width: 100%; height: auto; }
+    </style>
+  </head>
+  <body>
+    ${pages}
+  </body>
+</html>`;
+
+      const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `etiquettes_${Date.now()}.html`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setStatus(`Etiquettes telechargees (${selection.length})`);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Erreur telechargement";
+      setStatus(message);
+    }
   };
 
   return (
@@ -740,6 +867,12 @@ export default function Home() {
                     </option>
                   ))}
                 </select>
+              </div>
+            ) : null}
+            {sheetLabel && sheetOptions.length <= 1 ? (
+              <div className="sheet-row">
+                <span className="sheet-label">Feuille</span>
+                <span className="pill">{sheetLabel}</span>
               </div>
             ) : null}
             <div className="odoo-status">
@@ -853,6 +986,9 @@ export default function Home() {
             </button>
             <button type="button" className="ghost" onClick={handlePrintAll}>
               Imprimer tout
+            </button>
+            <button type="button" className="ghost" onClick={downloadLabels}>
+              Telecharger etiquettes
             </button>
           </div>
         </section>

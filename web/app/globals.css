@@ -249,6 +249,11 @@ select {
   color: var(--muted);
 }
 
+.sheet-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 input[type="file"] {
   flex: 1 1 220px;
 }

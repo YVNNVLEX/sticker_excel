@@ -11,6 +11,9 @@ type SearchPayload = {
   password?: string;
   searchType?: "EAN" | "Article";
   terms?: string[];
+  // optionnel si tu veux des prix dépendants du client
+  partnerId?: number;
+  quantity?: number;
 };
 
 const MODEL = "product.product";
@@ -20,12 +23,8 @@ const FIELD_CATEGORY = "categ_id";
 const PRICELIST_NAME = "prix_variante";
 
 function extractDigits(value: unknown) {
-  if (value == null) {
-    return null;
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return String(Math.trunc(value));
-  }
+  if (value == null) return null;
+  if (typeof value === "number" && Number.isFinite(value)) return String(Math.trunc(value));
   const digits = String(value).replace(/\D+/g, "");
   return digits ? digits : null;
 }
@@ -42,137 +41,108 @@ function computeEan13CheckDigit(digits12: string) {
 
 function toEan13(value: unknown) {
   const digits = extractDigits(value);
-  if (!digits) {
-    return null;
-  }
-  if (digits.length === 12) {
-    return `${digits}${computeEan13CheckDigit(digits)}`;
-  }
-  if (digits.length === 13) {
-    return digits;
-  }
+  if (!digits) return null;
+  if (digits.length === 12) return `${digits}${computeEan13CheckDigit(digits)}`;
+  if (digits.length === 13) return digits;
   return null;
 }
 
 function readField(record: Record<string, unknown>, field: string) {
   const value = record[field];
-  if (Array.isArray(value)) {
-    return value[1] ?? value[0] ?? "";
-  }
+  if (Array.isArray(value)) return value[1] ?? value[0] ?? "";
   return value;
+}
+
+function toNumber(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const normalized = Number(value.replace(",", "."));
+    if (Number.isFinite(normalized)) return normalized;
+  }
+  return null;
+}
+
+function pickPrice(value: unknown) {
+  const direct = toNumber(value);
+  if (direct != null) return direct;
+
+  if (Array.isArray(value) && value.length) {
+    const first = toNumber(value[0]);
+    if (first != null) return first;
+  }
+
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    if ("price" in obj) {
+      const price = toNumber(obj.price);
+      if (price != null) return price;
+    }
+  }
+  return null;
+}
+
+function extractPriceFromResult(result: unknown, pricelistId: number, productId: number) {
+  const direct = pickPrice(result);
+  if (direct != null) return direct;
+
+  if (Array.isArray(result)) {
+    for (const entry of result) {
+      const picked = pickPrice(entry);
+      if (picked != null) return picked;
+
+      if (Array.isArray(entry) && entry.length >= 2) {
+        const key = entry[0];
+        const value = entry[1];
+        const price = pickPrice(value);
+        if (price != null) {
+          if (key === productId || key === pricelistId || typeof key !== "number") return price;
+        }
+      }
+
+      if (entry && typeof entry === "object") {
+        const obj = entry as Record<string, unknown>;
+        const prodKey = String(productId);
+        const price = pickPrice(obj[prodKey]);
+        if (price != null) return price;
+      }
+    }
+  }
+
+  if (result && typeof result === "object") {
+    const obj = result as Record<string, unknown>;
+    const plKey = String(pricelistId);
+    const prodKey = String(productId);
+
+    const byPl = pickPrice(obj[plKey]);
+    if (byPl != null) return byPl;
+
+    const byProd = pickPrice(obj[prodKey]);
+    if (byProd != null) return byProd;
+
+    for (const value of Object.values(obj)) {
+      const price = pickPrice(value);
+      if (price != null) return price;
+    }
+  }
+
+  return null;
 }
 
 function categoryDiscount(categoryName: string) {
   const name = categoryName.toLowerCase();
-  if (name.includes("habillement") || name.includes("vetement")) {
-    return 0.5;
-  }
-  if (name.includes("accessoire")) {
-    return 0.5;
-  }
-  if (name.includes("chaussure")) {
-    return 0.3;
-  }
-  if (name.includes("puericulture") || name.includes("parfum")) {
-    return 0.1;
-  }
+  if (name.includes("habillement") || name.includes("vetement")) return 0.5;
+  if (name.includes("accessoire")) return 0.5;
+  if (name.includes("chaussure")) return 0.3;
+  if (name.includes("puericulture") || name.includes("parfum")) return 0.1;
   return 0;
 }
 
 function applyClubPrice(price: unknown, categoryName: string) {
-  if (typeof price === "number" && Number.isFinite(price)) {
-    const discount = categoryDiscount(categoryName);
-    return Math.round(price * (1 - discount));
-  }
-  if (typeof price === "string") {
-    const normalized = Number(price.replace(",", "."));
-    if (Number.isFinite(normalized)) {
-      const discount = categoryDiscount(categoryName);
-      return Math.round(normalized * (1 - discount));
-    }
-  }
-  return price;
-}
-
-function extractPriceFromResult(
-  result: unknown,
-  pricelistId: number,
-  productId: number,
-) {
-  if (typeof result === "number" && Number.isFinite(result)) {
-    return result;
-  }
-  if (Array.isArray(result)) {
-    if (result.length >= 1 && typeof result[0] === "number" && Number.isFinite(result[0])) {
-      return result[0];
-    }
-    for (const entry of result) {
-      if (typeof entry === "number" && Number.isFinite(entry)) {
-        return entry;
-      }
-      if (Array.isArray(entry) && entry.length >= 2) {
-        const key = entry[0];
-        const value = entry[1];
-        if (typeof value === "number" && Number.isFinite(value)) {
-          if (key === productId || key === pricelistId || typeof key !== "number") {
-            return value;
-          }
-        }
-      }
-      if (entry && typeof entry === "object") {
-        const obj = entry as Record<string, unknown>;
-        if (typeof obj.price === "number" && Number.isFinite(obj.price)) {
-          return obj.price;
-        }
-      }
-    }
-  }
-  if (result && typeof result === "object") {
-    const obj = result as Record<string, unknown>;
-    if (typeof obj.price === "number" && Number.isFinite(obj.price)) {
-      return obj.price;
-    }
-    const plKey = String(pricelistId);
-    const prodKey = String(productId);
-    if (plKey in obj) {
-      const val = obj[plKey];
-      if (typeof val === "number") {
-        return val;
-      }
-      if (val && typeof val === "object") {
-        const nested = val as Record<string, unknown>;
-        if (prodKey in nested && typeof nested[prodKey] === "number") {
-          return nested[prodKey] as number;
-        }
-      }
-    }
-    if (prodKey in obj) {
-      const val = obj[prodKey];
-      if (typeof val === "number") {
-        return val;
-      }
-      if (val && typeof val === "object") {
-        const nested = val as Record<string, unknown>;
-        if (plKey in nested && typeof nested[plKey] === "number") {
-          return nested[plKey] as number;
-        }
-      }
-    }
-  }
-  return null;
-}
-
-function toNumber(value: unknown) {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === "string") {
-    const normalized = Number(value.replace(",", "."));
-    if (Number.isFinite(normalized)) {
-      return normalized;
-    }
-  }
-  return null;
+  const numeric = toNumber(price);
+  if (numeric == null) return price;
+  const discount = categoryDiscount(categoryName);
+  const discounted = numeric * (1 - discount);
+  return Math.round(discounted / 100) * 100;
 }
 
 async function getPricelistId(
@@ -193,11 +163,16 @@ async function getPricelistId(
     [[["name", "ilike", PRICELIST_NAME]]],
     { fields: ["id", "name"], limit: 1 },
   );
+
   const list = Array.isArray(result) ? result : [];
   const item = list[0] as { id?: number; name?: string } | undefined;
   return item?.id ?? null;
 }
 
+/**
+ * ✅ Odoo 18 : stratégie la plus fiable = lire un champ avec context pricelist.
+ * - On tente "price" (selon modules), puis "lst_price"/"list_price" en fallback.
+ */
 async function getPriceFromPricelist(
   transport: RpcTransport,
   baseUrl: string,
@@ -206,18 +181,77 @@ async function getPriceFromPricelist(
   password: string,
   pricelistId: number,
   productId: number,
+  quantity: number,
+  partnerId?: number,
 ) {
-  const attempts = [
-    { method: "get_product_price_rule", args: [[pricelistId], productId, 1.0, false] },
-    { method: "get_product_price_rule", args: [[pricelistId], productId, 1.0, false, false] },
-    { method: "get_product_price", args: [[pricelistId], productId, 1.0, false] },
-    { method: "get_product_price", args: [[pricelistId], productId, 1.0, false, false] },
-    { method: "price_get", args: [[pricelistId], productId, 1.0, false] },
-    { method: "price_get", args: [[pricelistId], [productId], 1.0, false] },
-    { method: "get_products_price", args: [[pricelistId], [productId], [1.0], false] },
-    { method: "get_products_price", args: [[pricelistId], [productId], 1.0, false] },
-    { method: "compute_price_rule", args: [[pricelistId], [[productId, 1.0, false]]] },
-    { method: "_compute_price_rule", args: [[pricelistId], [[productId, 1.0, false]]] },
+  // 1) ✅ READ + CONTEXT (souvent la meilleure option en Odoo récent)
+  try {
+    const res = await executeKw(
+      transport,
+      baseUrl,
+      db,
+      uid,
+      password,
+      "product.product",
+      "read",
+      [[productId]],
+      {
+        fields: ["price", "lst_price", "list_price"],
+        context: {
+          pricelist: pricelistId,
+          pricelist_id: pricelistId, // parfois utilisé selon modules
+          quantity,
+          ...(partnerId ? { partner_id: partnerId } : {}),
+        },
+      },
+    );
+
+    const arr = Array.isArray(res) ? res : [];
+    const rec = (arr[0] ?? {}) as Record<string, unknown>;
+
+    // Selon config, "price" peut ne pas exister => on tente plusieurs champs
+    const candidate =
+      pickPrice(rec.price) ??
+      pickPrice(rec.lst_price) ??
+      pickPrice(rec.list_price);
+
+    if (candidate != null) return candidate;
+  } catch (e) {
+    console.error("[Odoo price/read+context] failed explain:", e);
+  }
+
+  // 2) Fallback : certaines instances exposent encore ces méthodes
+  const attempts: Array<{
+    model: string;
+    method: string;
+    args: unknown[];
+    kwargs?: Record<string, unknown>;
+    label: string;
+  }> = [
+    {
+      label: "product.pricelist._compute_price_rule",
+      model: "product.pricelist",
+      method: "_compute_price_rule",
+      args: [[pricelistId], [[productId, quantity, partnerId || false]]],
+    },
+    {
+      label: "product.pricelist.compute_price_rule",
+      model: "product.pricelist",
+      method: "compute_price_rule",
+      args: [[pricelistId], [[productId, quantity, partnerId || false]]],
+    },
+    {
+      label: "product.pricelist.get_products_price",
+      model: "product.pricelist",
+      method: "get_products_price",
+      args: [[pricelistId], [productId], [quantity]],
+    },
+    {
+      label: "product.pricelist.get_product_price",
+      model: "product.pricelist",
+      method: "get_product_price",
+      args: [[pricelistId], productId, quantity, partnerId || false],
+    },
   ];
 
   for (const attempt of attempts) {
@@ -228,16 +262,16 @@ async function getPriceFromPricelist(
         db,
         uid,
         password,
-        "product.pricelist",
+        attempt.model,
         attempt.method,
         attempt.args,
+        attempt.kwargs,
       );
+
       const price = extractPriceFromResult(result, pricelistId, productId);
-      if (price != null) {
-        return price;
-      }
-    } catch {
-      // try next method
+      if (price != null) return price;
+    } catch (e) {
+      console.error(`[Odoo ${attempt.label}] failed:`, e);
     }
   }
 
@@ -247,6 +281,7 @@ async function getPriceFromPricelist(
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as SearchPayload;
+
     const baseUrl = (body.baseUrl || "").trim();
     const db = (body.db || "").trim();
     const username = (body.username || "").trim();
@@ -254,36 +289,21 @@ export async function POST(request: Request) {
     const searchType = body.searchType || "EAN";
     const terms = (body.terms || []).map((term) => String(term).trim()).filter(Boolean);
 
-    if (
-      !baseUrl ||
-      !db ||
-      !username ||
-      !password ||
-      !terms.length
-    ) {
-      return NextResponse.json(
-        { message: "Parametres Odoo incomplets" },
-        { status: 400 },
-      );
+    const quantity = typeof body.quantity === "number" && body.quantity > 0 ? body.quantity : 1.0;
+    const partnerId = typeof body.partnerId === "number" && body.partnerId > 0 ? body.partnerId : undefined;
+
+    if (!baseUrl || !db || !username || !password || !terms.length) {
+      return NextResponse.json({ message: "Parametres Odoo incomplets" }, { status: 400 });
     }
 
     const { uid, transport, baseUrl: normalizedBaseUrl } =
       await loginWithFallback(baseUrl, db, username, password);
 
     if (!uid) {
-      return NextResponse.json(
-        { message: "Connexion Odoo refusee" },
-        { status: 401 },
-      );
+      return NextResponse.json({ message: "Connexion Odoo refusee" }, { status: 401 });
     }
 
-    const pricelistId = await getPricelistId(
-      transport,
-      normalizedBaseUrl,
-      db,
-      uid,
-      password,
-    );
+    const pricelistId = await getPricelistId(transport, normalizedBaseUrl, db, uid, password);
     if (!pricelistId) {
       return NextResponse.json(
         { message: `Liste de prix introuvable: ${PRICELIST_NAME}` },
@@ -293,9 +313,7 @@ export async function POST(request: Request) {
 
     const normalizedTerms =
       searchType === "EAN"
-        ? terms
-            .map((term) => toEan13(term))
-            .filter((term): term is string => Boolean(term))
+        ? terms.map((term) => toEan13(term)).filter((term): term is string => Boolean(term))
         : terms;
 
     if (!normalizedTerms.length) {
@@ -304,13 +322,6 @@ export async function POST(request: Request) {
 
     const field = searchType === "EAN" ? FIELD_EAN : FIELD_ARTICLE;
     const domain = [[field, "in", normalizedTerms]];
-    const fields = [
-      FIELD_ARTICLE,
-      FIELD_EAN,
-      FIELD_CATEGORY,
-      "list_price",
-      "lst_price",
-    ];
 
     const result = await executeKw(
       transport,
@@ -321,7 +332,7 @@ export async function POST(request: Request) {
       MODEL,
       "search_read",
       [domain],
-      { fields: ["id", ...fields] },
+      { fields: ["id", FIELD_ARTICLE, FIELD_EAN, FIELD_CATEGORY] },
     );
 
     const records = Array.isArray(result)
@@ -329,7 +340,9 @@ export async function POST(request: Request) {
           result.map(async (item: Record<string, unknown>, index: number) => {
             const productId = Number(item.id);
             const categoryName = String(readField(item, FIELD_CATEGORY) || "");
-            let prixPublic = null;
+
+            let prixPublic: number | null = null;
+
             if (Number.isFinite(productId) && productId > 0) {
               prixPublic = await getPriceFromPricelist(
                 transport,
@@ -339,14 +352,30 @@ export async function POST(request: Request) {
                 password,
                 pricelistId,
                 productId,
+                quantity,
+                partnerId,
               );
-            }
-            if (prixPublic == null) {
-              const basePrice =
-                toNumber(readField(item, "lst_price")) ??
-                toNumber(readField(item, "list_price"));
-              if (basePrice != null) {
-                prixPublic = basePrice;
+
+              // dernier secours si pricelist ne renvoie rien
+              if (prixPublic == null) {
+                try {
+                  const readRes = await executeKw(
+                    transport,
+                    normalizedBaseUrl,
+                    db,
+                    uid,
+                    password,
+                    "product.product",
+                    "read",
+                    [[productId]],
+                    { fields: ["lst_price", "list_price"] },
+                  );
+                  const arr = Array.isArray(readRes) ? readRes : [];
+                  const rec = (arr[0] ?? {}) as Record<string, unknown>;
+                  prixPublic = pickPrice(rec.lst_price) ?? pickPrice(rec.list_price) ?? null;
+                } catch (e) {
+                  console.error("[Odoo fallback read lst_price] failed:", e);
+                }
               }
             }
 
@@ -354,8 +383,8 @@ export async function POST(request: Request) {
               row: index + 1,
               article: String(readField(item, FIELD_ARTICLE) || ""),
               ean: toEan13(readField(item, FIELD_EAN)) || "",
-              prixClub: applyClubPrice(prixPublic, categoryName),
               prixPublic,
+              prixClub: applyClubPrice(prixPublic, categoryName),
             };
           }),
         )
@@ -363,8 +392,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ records });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Erreur Odoo";
+    const message = error instanceof Error ? error.message : "Erreur Odoo";
     return NextResponse.json({ message }, { status: 500 });
   }
 }

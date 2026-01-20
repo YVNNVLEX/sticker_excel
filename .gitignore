@@ -3,6 +3,8 @@ __pycache__/
 *.pyo
 labels_output/
 *.db
+!web/default-db/
+!web/default-db/*.db
 ~$*.xlsx
 web/data/
 web/node_modules/

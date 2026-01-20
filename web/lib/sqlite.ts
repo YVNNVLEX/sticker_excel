@@ -6,6 +6,13 @@ const dataDir = path.join(process.cwd(), "data");
 fs.mkdirSync(dataDir, { recursive: true });
 
 const dbPath = path.join(dataDir, "labels.db");
+const defaultDbPath = path.join(process.cwd(), "default-db", "orchestra_labels.db");
+
+if (!fs.existsSync(dbPath) || fs.statSync(dbPath).size === 0) {
+  if (fs.existsSync(defaultDbPath)) {
+    fs.copyFileSync(defaultDbPath, dbPath);
+  }
+}
 const db = new Database(dbPath);
 
 db.pragma("journal_mode = WAL");
@@ -22,6 +29,10 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_products_ean ON products (ean);
   CREATE INDEX IF NOT EXISTS idx_products_article ON products (article);
+  CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
+  );
 `);
 
 export default db;

@@ -14,18 +14,18 @@ $default = $printers | Where-Object { $_.Default -eq $true } | Select-Object -Fi
 if (-not $default) { $default = $printers | Select-Object -First 1 }
 $info = @{ available = $false; status = "unavailable" };
 if ($default) {
-  $offline = $default.WorkOffline -eq $true
-  $error = $default.DetectedErrorState
-  $statusCode = $default.PrinterStatus
-  $status = if ($offline) { "offline" } elseif ($error -and $error -ne 0) { "error" } elseif ($statusCode -eq 3) { "ready" } else { "unknown" }
-  $info = @{
-    available = $true
-    name = $default.Name
-    offline = $offline
-    statusCode = $statusCode
-    errorCode = $error
-    status = $status
-  }
+$offline = $default.WorkOffline -eq $true
+$errorState = $default.DetectedErrorState
+$statusCode = $default.PrinterStatus
+$status = if ($offline) { "offline" } elseif ($errorState -and $errorState -ne 0) { "error" } elseif ($statusCode -eq 3) { "ready" } else { "unknown" }
+$info = @{
+  available = $true
+  name = $default.Name
+  offline = $offline
+  statusCode = $statusCode
+  errorCode = $errorState
+  status = $status
+}
 }
 $info | ConvertTo-Json -Compress
 `;
