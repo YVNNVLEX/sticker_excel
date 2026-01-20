@@ -21,12 +21,13 @@ export async function POST(request: Request) {
     const workbook = XLSX.read(buffer, { type: "buffer" });
     const sheetName = String(formData.get("sheet") || "").trim();
 
-    const allRecords: {
+    type ImportRecord = {
       article: string;
       ean: string;
       prixClub: unknown;
       prixPublic: unknown;
-    }[] = [];
+    };
+    const allRecords: ImportRecord[] = [];
 
     const targetSheets = sheetName
       ? workbook.SheetNames.filter((name) => name === sheetName)
@@ -55,10 +56,10 @@ export async function POST(request: Request) {
       `INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`,
     );
     const clear = db.prepare("DELETE FROM products");
-    const transaction = db.transaction((records) => {
+    const transaction = db.transaction((records: ImportRecord[]) => {
       clear.run();
       clearMeta.run();
-      records.forEach((record: typeof allRecords[number]) => {
+      records.forEach((record) => {
         insert.run(
           record.article,
           record.ean,
