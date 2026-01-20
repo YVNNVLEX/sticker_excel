@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import XLSX from "xlsx";
+import * as XLSX from "xlsx";
 import db from "@/lib/sqlite";
 import { parseRecordsFromRows } from "@/lib/excelParser";
 

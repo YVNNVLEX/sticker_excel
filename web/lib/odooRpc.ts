@@ -137,7 +137,7 @@ function xmlRpcCall(
     const client = url.startsWith("https://")
       ? xmlrpc.createSecureClient({ url })
       : xmlrpc.createClient({ url });
-    client.methodCall(method, args, (error, value) => {
+    client.methodCall(method, args, (error: unknown, value: unknown) => {
       if (error) {
         reject(error);
         return;

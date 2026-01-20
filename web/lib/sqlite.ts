@@ -1,8 +1,12 @@
 import Database from "better-sqlite3";
 import fs from "fs";
+import os from "os";
 import path from "path";
 
-const dataDir = path.join(process.cwd(), "data");
+const isVercel = process.env.VERCEL === "1";
+const dataDir = isVercel
+  ? path.join(os.tmpdir(), "etiquettes-ui")
+  : path.join(process.cwd(), "data");
 fs.mkdirSync(dataDir, { recursive: true });
 
 const dbPath = path.join(dataDir, "labels.db");
