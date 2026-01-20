@@ -25,18 +25,19 @@ function seedDefaultIfEmpty() {
     return false;
   }
   const defaultDb = new Database(DEFAULT_DB_PATH, { readonly: true });
+  type DefaultRecord = {
+    article: string;
+    ean: string;
+    prixClub: unknown;
+    prixPublic: unknown;
+  };
   const allRecords = defaultDb
     .prepare(
       `SELECT article, ean, prix_club as prixClub, prix_public as prixPublic
        FROM products
        ORDER BY id ASC`,
     )
-    .all() as {
-    article: string;
-    ean: string;
-    prixClub: unknown;
-    prixPublic: unknown;
-  }[];
+    .all() as DefaultRecord[];
   const metaRows = defaultDb
     .prepare(`SELECT key, value FROM meta`)
     .all() as { key: string; value: string }[];
@@ -52,10 +53,10 @@ function seedDefaultIfEmpty() {
   const insertMeta = db.prepare(
     `INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`,
   );
-  const transaction = db.transaction((records) => {
+  const transaction = db.transaction((records: DefaultRecord[]) => {
     clear.run();
     clearMeta.run();
-    records.forEach((record: typeof allRecords[number]) => {
+    records.forEach((record) => {
       insert.run(
         record.article,
         record.ean,
