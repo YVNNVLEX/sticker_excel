@@ -135,12 +135,21 @@ function formatPrice(value: unknown) {
   }
   if (typeof value === "number" && Number.isFinite(value)) {
     if (Number.isInteger(value)) {
-      return String(value);
+      return String(Math.trunc(value));
     }
-    return value.toFixed(2);
+    return String(value);
   }
   const text = String(value).trim();
   return text || "-";
+}
+
+function formatPriceWithSeparator(value: unknown) {
+  const price = formatPrice(value);
+  if (price === "-") {
+    return price;
+  }
+  // Ajouter des séparateurs d'espace tous les 3 chiffres de droite à gauche
+  return price.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 }
 
 function escapeHtml(value: string) {
@@ -229,17 +238,17 @@ function barcodeOptions(
   scale: number,
   displayValue: boolean,
 ) {
-  const ratio = displayValue ? 0.35 : 0.28;
+  const ratio = displayValue ? 0.40 : 0.35;
   const heightPx = Math.max(
-    6,
+    8,
     Math.round(heightMm * PX_PER_MM * ratio * scale),
   );
-  const moduleMm = 0.33;
+  const moduleMm = 0.30;
   const widthPx = Math.max(
     1,
     Math.round(moduleMm * PX_PER_MM * scale),
   );
-  const fontSize = Math.max(10, Math.round(10 * scale));
+  const fontSize = Math.max(10, Math.round(9 * scale));
   return { heightPx, widthPx, fontSize, displayValue };
 }
 
@@ -336,8 +345,6 @@ export default function Home() {
   const [previewScale, setPreviewScale] = useState(2);
   const [printOffsetX, setPrintOffsetX] = useState(0);
   const [printOffsetY, setPrintOffsetY] = useState(0);
-  const [printQueue, setPrintQueue] = useState<RecordItem[]>([]);
-  const [printRenderCount, setPrintRenderCount] = useState(0);
   const [dataSource, setDataSource] = useState<"excel" | "odoo">("excel");
   const [odooModalOpen, setOdooModalOpen] = useState(false);
   const [odooConnected, setOdooConnected] = useState(false);
@@ -350,7 +357,6 @@ export default function Home() {
     password: "",
   });
   const sheetRecordsRef = useRef<Record<string, RecordItem[]>>({});
-  const printRenderedRef = useRef<Set<string>>(new Set());
 
   const eanMap = useMemo(() => buildMap(records, "ean"), [records]);
   const articleMap = useMemo(() => buildMap(records, "article"), [records]);
@@ -382,23 +388,6 @@ export default function Home() {
         return "Statut inconnu";
     }
   }, [printerStatus.status]);
-
-  useEffect(() => {
-    if (!printQueue.length) {
-      return;
-    }
-    if (printRenderCount < printQueue.length) {
-      return;
-    }
-    const timer = window.setTimeout(() => window.print(), 100);
-    return () => window.clearTimeout(timer);
-  }, [printQueue, printRenderCount]);
-
-  useEffect(() => {
-    const handler = () => setPrintQueue([]);
-    window.addEventListener("afterprint", handler);
-    return () => window.removeEventListener("afterprint", handler);
-  }, []);
 
   useEffect(() => {
     let active = true;
@@ -469,13 +458,6 @@ export default function Home() {
     };
     loadLocal();
   }, []);
-
-  useEffect(() => {
-    if (!printQueue.length) {
-      printRenderedRef.current = new Set();
-      setPrintRenderCount(0);
-    }
-  }, [printQueue]);
 
   const handleFile = async (file: File) => {
     setStatus("Lecture du fichier...");
@@ -679,24 +661,129 @@ export default function Home() {
     setStatus(`Charge: ${nextRecords.length} lignes (${name})`);
   };
 
+  const buildPrintHtml = async (selection: RecordItem[]) => {
+    const mod = await import("jsbarcode");
+    const JsBarcode =
+      (mod as unknown as { default?: JsBarcodeFn }).default ??
+      (mod as unknown as JsBarcodeFn);
+    const cache = new Map<string, string>();
+    const barcodeDataUrl = (value: string) => {
+      const normalized = toEan13(value);
+      if (!normalized) {
+        return "";
+      }
+      const cached = cache.get(normalized);
+      if (cached) {
+        return cached;
+      }
+      const canvas = document.createElement("canvas");
+      try {
+        JsBarcode(canvas, normalized, {
+          format: "EAN13",
+          height: printBarcode.heightPx,
+          width: printBarcode.widthPx,
+          displayValue: false,
+          margin: 0,
+        });
+      } catch {
+        return "";
+      }
+      const url = canvas.toDataURL("image/png");
+      cache.set(normalized, url);
+      return url;
+    };
+
+    const pages = selection
+      .map((record) => {
+        const article = escapeHtml(record.article || "-");
+        const prixClub = escapeHtml(formatPriceWithSeparator(record.prixClub));
+        const prixPublic = escapeHtml(formatPriceWithSeparator(record.prixPublic));
+        const barcode = barcodeDataUrl(record.ean || "");
+        const barcodeHtml = barcode
+          ? `<img class="barcode" src="${barcode}" alt="Code-barres ${escapeHtml(
+              record.ean || "",
+            )}" />`
+          : `<div class="barcode empty"></div>`;
+        return `
+<div class="print-page">
+  <div class="label" style="transform: translate(${printOffsetX}mm, ${printOffsetY}mm);">
+    <div class="label__article">${article}</div>
+    <div class="label__price">${prixClub}</div>
+    <div class="label__public">${prixPublic}</div>
+    ${barcodeHtml}
+  </div>
+</div>`;
+      })
+      .join("");
+
+    return `<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Etiquettes</title>
+    <style>
+      * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      html, body { margin: 0; padding: 0; width: ${labelWidth}mm; height: ${labelHeight}mm; }
+      @page { size: ${labelWidth}mm ${labelHeight}mm; margin: 0 !important; }
+      .print-page { width: ${labelWidth}mm; height: ${labelHeight}mm; page-break-after: always; break-after: page; position: relative; overflow: hidden; }
+      .label { width: ${labelWidth}mm; height: ${labelHeight}mm; position: absolute; top: 0; left: 0; transform-origin: top left; border: none; border-radius: 0; padding: 3px; display: flex; flex-direction: column; align-items: center; justify-content: space-between; text-align: center; font-family: Arial, sans-serif; }
+      .label__article { font-weight: 700; font-size: 20px; letter-spacing: 0.08em; text-transform: uppercase; flex-shrink: 0; }
+      .label__price { font-weight: 700; font-size: 18px; color: #d62828; flex-shrink: 0; line-height: 1.1; }
+      .label__public { font-size: 16px; font-weight: 600; flex-shrink: 0; }
+      .barcode { width: 100%; height: auto; display: block; }
+      .barcode.empty { height: 24px; }
+    </style>
+  </head>
+  <body>
+    ${pages}
+  </body>
+</html>`;
+  };
+
+  const printLabels = async (selection: RecordItem[]) => {
+    if (!selection.length) {
+      setStatus("Aucun resultat");
+      return;
+    }
+    setStatus(`Preparation impression (${selection.length})...`);
+    try {
+      const html = await buildPrintHtml(selection);
+      const printWindow = window.open("", "_blank");
+      if (!printWindow) {
+        setStatus("Popup bloque");
+        return;
+      }
+      printWindow.document.open();
+      printWindow.document.write(html);
+      printWindow.document.close();
+      const triggerPrint = () => {
+        printWindow.focus();
+        printWindow.print();
+        printWindow.onafterprint = () => printWindow.close();
+      };
+      if (printWindow.document.readyState === "complete") {
+        window.setTimeout(triggerPrint, 200);
+      } else {
+        printWindow.onload = () => window.setTimeout(triggerPrint, 200);
+      }
+      setStatus(`Impression (${selection.length})...`);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Erreur impression";
+      setStatus(message);
+    }
+  };
+
   const handlePrintSelected = () => {
     if (selectedIndex == null || !filtered[selectedIndex]) {
       setStatus("Selectionnez une ligne");
       return;
     }
-    printRenderedRef.current = new Set();
-    setPrintRenderCount(0);
-    setPrintQueue([filtered[selectedIndex]]);
+    printLabels([filtered[selectedIndex]]);
   };
 
   const handlePrintAll = () => {
-    if (!filtered.length) {
-      setStatus("Aucun resultat");
-      return;
-    }
-    printRenderedRef.current = new Set();
-    setPrintRenderCount(0);
-    setPrintQueue(filtered);
+    printLabels(filtered);
   };
 
   const downloadLabels = async () => {
@@ -710,77 +797,7 @@ export default function Home() {
     }
     setStatus(`Generation etiquettes (${selection.length})...`);
     try {
-      const mod = await import("jsbarcode");
-      const JsBarcode =
-        (mod as unknown as { default?: JsBarcodeFn }).default ??
-        (mod as unknown as JsBarcodeFn);
-      const barcodeDataUrl = (value: string) => {
-        const normalized = toEan13(value);
-        if (!normalized) {
-          return "";
-        }
-        const svg = document.createElementNS(
-          "http://www.w3.org/2000/svg",
-          "svg",
-        );
-        try {
-          JsBarcode(svg, normalized, {
-            format: "EAN13",
-            height: printBarcode.heightPx,
-            width: printBarcode.widthPx,
-            displayValue: false,
-            margin: 0,
-          });
-        } catch {
-          return "";
-        }
-        const xml = new XMLSerializer().serializeToString(svg);
-        return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(xml)}`;
-      };
-
-      const pages = selection
-        .map((record) => {
-          const article = escapeHtml(record.article || "-");
-          const prixClub = escapeHtml(formatPrice(record.prixClub));
-          const prixPublic = escapeHtml(formatPrice(record.prixPublic));
-          const barcode = barcodeDataUrl(record.ean || "");
-          const barcodeHtml = barcode
-            ? `<img class="barcode" src="${barcode}" alt="" />`
-            : `<div class="barcode"></div>`;
-          return `
-<div class="print-page">
-  <div class="label" style="transform: translate(${printOffsetX}mm, ${printOffsetY}mm);">
-    <div class="label__article">${article}</div>
-    <div class="label__price">${prixClub}</div>
-    <div class="label__public">${prixPublic}</div>
-    ${barcodeHtml}
-  </div>
-</div>`;
-        })
-        .join("");
-
-      const html = `<!doctype html>
-<html lang="fr">
-  <head>
-    <meta charset="utf-8" />
-    <title>Etiquettes</title>
-    <style>
-      * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      html, body { margin: 0; padding: 0; }
-      @page { size: ${labelWidth}mm ${labelHeight}mm; margin: 0; }
-      .print-page { width: ${labelWidth}mm; height: ${labelHeight}mm; page-break-after: always; break-after: page; position: relative; overflow: hidden; }
-      .label { width: ${labelWidth}mm; height: ${labelHeight}mm; transform-origin: top left; border: 1.5px solid #111; border-radius: 0; padding: 4px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 4px; font-family: Arial, sans-serif; }
-      .label__article { font-weight: 700; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; }
-      .label__price { font-weight: 700; font-size: 18px; color: #d62828; }
-      .label__public { font-size: 12px; font-weight: 600; }
-      .barcode { width: 100%; height: auto; }
-    </style>
-  </head>
-  <body>
-    ${pages}
-  </body>
-</html>`;
-
+      const html = await buildPrintHtml(selection);
       const blob = new Blob([html], { type: "text/html;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -1101,8 +1118,8 @@ export default function Home() {
         </section>
       </main>
 
-      <div id="print-area" aria-hidden={!printQueue.length}>
-        {printQueue.map((record) => {
+      <div id="print-area" aria-hidden={filtered.length === 0}>
+        {filtered.map((record) => {
           const key = `${record.row}-${record.ean}`;
           return (
             <div
@@ -1119,23 +1136,10 @@ export default function Home() {
                 }}
               >
                 <div className="label__article">{record.article || "-"}</div>
-                <div className="label__price">{formatPrice(record.prixClub)}</div>
+                <div className="label__price">Prix Club: {formatPriceWithSeparator(record.prixClub)}</div>
                 <div className="label__public">
-                  {formatPrice(record.prixPublic)}
+                  Prix Grand Public: {formatPriceWithSeparator(record.prixPublic)}
                 </div>
-                <Barcode
-                  value={record.ean || ""}
-                  heightPx={printBarcode.heightPx}
-                  widthPx={printBarcode.widthPx}
-                  fontSize={printBarcode.fontSize}
-                  displayValue={printBarcode.displayValue}
-                  onRendered={() => {
-                    if (!printRenderedRef.current.has(key)) {
-                      printRenderedRef.current.add(key);
-                      setPrintRenderCount((prev) => prev + 1);
-                    }
-                  }}
-                />
               </div>
             </div>
           );
