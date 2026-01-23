@@ -18,6 +18,7 @@ type SearchPayload = {
 
 const MODEL = "product.product";
 const FIELD_ARTICLE = "default_code";
+const FIELD_NAME = "name";
 const FIELD_EAN = "barcode";
 const FIELD_CATEGORY = "categ_id";
 const PRICELIST_NAME = "prix_variante";
@@ -332,7 +333,7 @@ export async function POST(request: Request) {
       MODEL,
       "search_read",
       [domain],
-      { fields: ["id", FIELD_ARTICLE, FIELD_EAN, FIELD_CATEGORY] },
+      { fields: ["id", FIELD_ARTICLE, FIELD_NAME, FIELD_EAN, FIELD_CATEGORY] },
     );
 
     const records = Array.isArray(result)
@@ -382,6 +383,7 @@ export async function POST(request: Request) {
             return {
               row: index + 1,
               article: String(readField(item, FIELD_ARTICLE) || ""),
+              name: String(readField(item, FIELD_NAME) || ""),
               ean: toEan13(readField(item, FIELD_EAN)) || "",
               prixPublic,
               prixClub: applyClubPrice(prixPublic, categoryName),

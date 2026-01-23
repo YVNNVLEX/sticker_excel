@@ -5,14 +5,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 type RecordItem = {
   row: number;
   article: string;
+  name?: string;
   ean: string;
   prixClub: unknown;
   prixPublic: unknown;
-};
-
-type SheetSummary = {
-  name: string;
-  count: number;
 };
 
 type OdooConfig = {
@@ -40,60 +36,8 @@ type PrinterStatus = {
   name?: string;
 };
 
-const COLUMN_LETTERS = {
-  article: "R",
-  ean: "T",
-  prixClub: "AM",
-  prixPublic: "AN",
-} as const;
-
 const PX_PER_MM = 3.78;
-
-function columnLetterToIndex(letter: string) {
-  let index = 0;
-  const letters = String(letter || "").toUpperCase();
-  for (let i = 0; i < letters.length; i += 1) {
-    const code = letters.charCodeAt(i);
-    if (code < 65 || code > 90) {
-      return 0;
-    }
-    index = index * 26 + (code - 64);
-  }
-  return Math.max(0, index - 1);
-}
-
-function normalizeHeader(text: unknown) {
-  if (text == null) {
-    return "";
-  }
-  return String(text).toLowerCase().replace(/[^a-z0-9]+/g, "");
-}
-
-function findHeaderRow(rows: unknown[][]) {
-  const target = normalizeHeader("EAN Composant UVC");
-  const max = Math.min(rows.length, 50);
-  for (let i = 0; i < max; i += 1) {
-    const row = rows[i] || [];
-    for (let j = 0; j < row.length; j += 1) {
-      if (normalizeHeader(row[j]) === target) {
-        return i;
-      }
-    }
-  }
-  return 6;
-}
-
-function normalizeText(value: unknown) {
-  if (value == null) {
-    return null;
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return String(Number.isInteger(value) ? Math.trunc(value) : value);
-  }
-  const text = String(value).trim();
-  return text ? text : null;
-}
-
+const ODOO_SESSION_KEY = "odooSession";
 function extractDigits(value: unknown) {
   if (value == null) {
     return null;
@@ -184,53 +128,6 @@ async function readJsonResponse(response: Response) {
       raw: text.slice(0, 200),
     };
   }
-}
-
-function buildMap(records: RecordItem[], key: "ean" | "article") {
-  const map = new Map<string, RecordItem[]>();
-  records.forEach((record) => {
-    const value = record[key];
-    if (!value) {
-      return;
-    }
-    if (!map.has(value)) {
-      map.set(value, []);
-    }
-    map.get(value)?.push(record);
-  });
-  return map;
-}
-
-function parseRecordsFromRows(rows: unknown[][]) {
-  const headerRow = findHeaderRow(rows);
-  const colIndex = {
-    article: columnLetterToIndex(COLUMN_LETTERS.article),
-    ean: columnLetterToIndex(COLUMN_LETTERS.ean),
-    prixClub: columnLetterToIndex(COLUMN_LETTERS.prixClub),
-    prixPublic: columnLetterToIndex(COLUMN_LETTERS.prixPublic),
-  };
-
-  const parsed: RecordItem[] = [];
-  for (let i = headerRow + 1; i < rows.length; i += 1) {
-    const row = rows[i] || [];
-    const article = normalizeText(row[colIndex.article]);
-    const ean = toEan13(row[colIndex.ean]);
-    const prixClub = row[colIndex.prixClub];
-    const prixPublic = row[colIndex.prixPublic];
-
-    if (!article && !ean && prixClub == null && prixPublic == null) {
-      continue;
-    }
-
-    parsed.push({
-      row: i + 1,
-      article: article || "",
-      ean: ean || "",
-      prixClub,
-      prixPublic,
-    });
-  }
-  return parsed;
 }
 
 function barcodeOptions(
@@ -326,14 +223,9 @@ function Barcode({
 }
 
 export default function Home() {
-  const [records, setRecords] = useState<RecordItem[]>([]);
   const [filtered, setFiltered] = useState<RecordItem[]>([]);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
-  const [status, setStatus] = useState("En attente de fichier");
-  const [fileName, setFileName] = useState("Aucun fichier");
-  const [sheetOptions, setSheetOptions] = useState<SheetSummary[]>([]);
-  const [selectedSheet, setSelectedSheet] = useState("");
-  const [sheetLabel, setSheetLabel] = useState("");
+  const [status, setStatus] = useState("Connectez-vous a Odoo");
   const [printerStatus, setPrinterStatus] = useState<PrinterStatus>({
     available: false,
     status: "unknown",
@@ -345,8 +237,6 @@ export default function Home() {
   const [previewScale, setPreviewScale] = useState(2);
   const [printOffsetX, setPrintOffsetX] = useState(0);
   const [printOffsetY, setPrintOffsetY] = useState(0);
-  const [dataSource, setDataSource] = useState<"excel" | "odoo">("excel");
-  const [odooModalOpen, setOdooModalOpen] = useState(false);
   const [odooConnected, setOdooConnected] = useState(false);
   const [odooLoading, setOdooLoading] = useState(false);
   const [odooError, setOdooError] = useState("");
@@ -356,11 +246,6 @@ export default function Home() {
     username: "",
     password: "",
   });
-  const sheetRecordsRef = useRef<Record<string, RecordItem[]>>({});
-
-  const eanMap = useMemo(() => buildMap(records, "ean"), [records]);
-  const articleMap = useMemo(() => buildMap(records, "article"), [records]);
-
   const selectedRecord =
     selectedIndex != null ? filtered[selectedIndex] : null;
 
@@ -418,146 +303,21 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const loadLocal = async () => {
-      try {
-        const response = await fetch("/api/local-db/records", {
-          cache: "no-store",
-        });
-        if (!response.ok) {
-          return;
-        }
-        const data = (await response.json()) as {
-          records?: RecordItem[];
-          meta?: { source?: string; defaultFile?: string; sheet?: string };
-        };
-        if (data.records && data.records.length) {
-          const source = (data.meta?.source || "").trim();
-          const defaultFile = (data.meta?.defaultFile || "ORCHESTRA_MARGE.xlsx").trim();
-          const sheet = (data.meta?.sheet || "").trim();
-          const displayName =
-            !source || source === "excel-default" || source === "excel"
-              ? defaultFile
-              : source;
-          setRecords(data.records);
-          setFiltered([]);
-          setSelectedIndex(null);
-          setFileName(displayName);
-          setSheetLabel(sheet);
-          setSheetOptions([]);
-          setSelectedSheet("");
-          setDataSource("excel");
-          setStatus(
-            sheet
-              ? `Charge: ${data.records.length} lignes (${displayName} / ${sheet})`
-              : `Charge: ${data.records.length} lignes (${displayName})`,
-          );
-        }
-      } catch {
-        // ignore local db errors
-      }
-    };
-    loadLocal();
-  }, []);
-
-  const handleFile = async (file: File) => {
-    setStatus("Lecture du fichier...");
+    if (typeof window === "undefined") {
+      return;
+    }
+    const saved = window.sessionStorage.getItem(ODOO_SESSION_KEY);
+    if (!saved) {
+      return;
+    }
     try {
-      const data = await file.arrayBuffer();
-      const XLSX = await import("xlsx");
-      const workbook = XLSX.read(data, { type: "array" });
-      const sheetRecords: Record<string, RecordItem[]> = {};
-      const summaries: SheetSummary[] = [];
-
-      workbook.SheetNames.forEach((name) => {
-        const sheet = workbook.Sheets[name];
-        const rows = XLSX.utils.sheet_to_json(sheet, {
-          header: 1,
-          defval: null,
-        }) as unknown[][];
-        const parsed = parseRecordsFromRows(rows);
-        sheetRecords[name] = parsed;
-        summaries.push({ name, count: parsed.length });
-      });
-
-      const defaultSheet =
-        summaries.reduce((best, current) =>
-          current.count > best.count ? current : best,
-        { name: workbook.SheetNames[0], count: -1 }).name ||
-        workbook.SheetNames[0];
-
-      sheetRecordsRef.current = sheetRecords;
-      setSheetOptions(summaries);
-      setSelectedSheet(defaultSheet);
-      setSheetLabel(defaultSheet);
-      setRecords(sheetRecords[defaultSheet] || []);
-      setFiltered([]);
-      setSelectedIndex(null);
-      setFileName(file.name);
-      setDataSource((prev) => (prev === "odoo" ? "odoo" : "excel"));
-      setStatus(
-        `Charge: ${(sheetRecords[defaultSheet] || []).length} lignes (${defaultSheet})`,
-      );
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("sheet", defaultSheet);
-      fetch("/api/local-db/import", { method: "POST", body: formData }).catch(
-        () => undefined,
-      );
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Erreur de lecture";
-      setStatus("Erreur de lecture");
-      alert(`Impossible de lire le fichier: ${message}`);
+      const parsed = JSON.parse(saved) as OdooConfig;
+      setOdooConfig(parsed);
+      connectWithConfig(parsed, true);
+    } catch {
+      window.sessionStorage.removeItem(ODOO_SESSION_KEY);
     }
-  };
-
-  const runSearch = () => {
-    if (dataSource === "odoo") {
-      searchOdoo();
-      return;
-    }
-    if (!records.length) {
-      setStatus("Chargez un fichier d abord");
-      return;
-    }
-    const parts = splitInput(searchInput);
-    if (!parts.length) {
-      setStatus("Entrez une valeur de recherche");
-      return;
-    }
-
-    const results: RecordItem[] = [];
-    if (searchType === "EAN") {
-      parts.forEach((part) => {
-        const key = toEan13(part);
-        if (key && eanMap.has(key)) {
-          results.push(...(eanMap.get(key) || []));
-        }
-      });
-    } else {
-      parts.forEach((part) => {
-        const key = normalizeText(part);
-        if (key && articleMap.has(key)) {
-          results.push(...(articleMap.get(key) || []));
-        }
-      });
-    }
-
-    const unique: RecordItem[] = [];
-    const seen = new Set<string>();
-    results.forEach((record) => {
-      const key = `${record.row}-${record.article}-${record.ean}`;
-      if (seen.has(key)) {
-        return;
-      }
-      seen.add(key);
-      unique.push(record);
-    });
-
-    setFiltered(unique);
-    setSelectedIndex(unique.length ? 0 : null);
-    setStatus(unique.length ? `Resultats: ${unique.length}` : "Aucun resultat");
-  };
+  }, []);
 
   const clearSearch = () => {
     setSearchInput("");
@@ -566,14 +326,17 @@ export default function Home() {
     setStatus("Recherche effacee");
   };
 
-  const testOdoo = async () => {
+  const connectWithConfig = async (config: OdooConfig, silent = false) => {
     setOdooLoading(true);
     setOdooError("");
     try {
+      if (!silent) {
+        setStatus("Connexion Odoo...");
+      }
       const response = await fetch("/api/odoo/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(odooConfig),
+        body: JSON.stringify(config),
       });
       const data = await readJsonResponse(response);
       if (!response.ok || !data.ok) {
@@ -584,8 +347,11 @@ export default function Home() {
         throw new Error(message);
       }
       setOdooConnected(true);
-      setDataSource("odoo");
       setStatus("Connexion Odoo reussie");
+      setOdooConfig(config);
+      if (typeof window !== "undefined") {
+        window.sessionStorage.setItem(ODOO_SESSION_KEY, JSON.stringify(config));
+      }
       return true;
     } catch (error) {
       const message =
@@ -599,12 +365,8 @@ export default function Home() {
     }
   };
 
-  const connectOdoo = async () => {
-    const ok = await testOdoo();
-    if (ok) {
-      setOdooModalOpen(false);
-    }
-  };
+  const testOdoo = async () => connectWithConfig(odooConfig, false);
+  const connectOdoo = async () => connectWithConfig(odooConfig, false);
 
   const searchOdoo = async () => {
     const parts = splitInput(searchInput);
@@ -651,16 +413,6 @@ export default function Home() {
     }
   };
 
-  const handleSheetChange = (name: string) => {
-    const nextRecords = sheetRecordsRef.current[name] || [];
-    setSelectedSheet(name);
-    setSheetLabel(name);
-    setRecords(nextRecords);
-    setFiltered([]);
-    setSelectedIndex(null);
-    setStatus(`Charge: ${nextRecords.length} lignes (${name})`);
-  };
-
   const buildPrintHtml = async (selection: RecordItem[]) => {
     const mod = await import("jsbarcode");
     const JsBarcode =
@@ -695,7 +447,7 @@ export default function Home() {
 
     const pages = selection
       .map((record) => {
-        const article = escapeHtml(record.article || "-");
+        const article = escapeHtml(record.name || record.article || "-");
         const prixClub = escapeHtml(formatPriceWithSeparator(record.prixClub));
         const prixPublic = escapeHtml(formatPriceWithSeparator(record.prixPublic));
         const barcode = barcodeDataUrl(record.ean || "");
@@ -774,6 +526,16 @@ export default function Home() {
     }
   };
 
+  const disconnectOdoo = () => {
+    setOdooConnected(false);
+    setFiltered([]);
+    setSelectedIndex(null);
+    setStatus("Deconnecte");
+    if (typeof window !== "undefined") {
+      window.sessionStorage.removeItem(ODOO_SESSION_KEY);
+    }
+  };
+
   const handlePrintSelected = () => {
     if (selectedIndex == null || !filtered[selectedIndex]) {
       setStatus("Selectionnez une ligne");
@@ -835,8 +597,7 @@ export default function Home() {
           </div>
           <h1>Recherche rapide, etiquette claire, impression directe.</h1>
           <p>
-            Chargez un fichier Excel, recherchez par EAN ou Article, puis
-            imprimez.
+            Connectez-vous a Odoo, recherchez par EAN ou Article, puis imprimez.
           </p>
         </div>
         <div className="hero__status">
@@ -848,85 +609,69 @@ export default function Home() {
         <section className="panel">
           <div className="card">
             <div className="card__header">
-              <h2>1. Charger le fichier</h2>
-              <span className="pill">{fileName || "Aucun fichier"}</span>
-            </div>
-            <div className="file-row">
-              <input
-                type="file"
-                accept=".xlsx"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file) {
-                    handleFile(file);
-                  }
-                }}
-              />
-              <button
-                type="button"
-                className="ghost"
-                onClick={() => setOdooModalOpen(true)}
-              >
-                Se connecter a Odoo
-              </button>
-            </div>
-            {sheetOptions.length > 1 ? (
-              <div className="sheet-row">
-                <label htmlFor="sheet-select">Feuille</label>
-                <select
-                  id="sheet-select"
-                  value={selectedSheet}
-                  onChange={(event) => handleSheetChange(event.target.value)}
-                >
-                  {sheetOptions.map((sheet) => (
-                    <option key={sheet.name} value={sheet.name}>
-                      {sheet.name} ({sheet.count})
-                    </option>
-                  ))}
-                </select>
-              </div>
-            ) : null}
-            {sheetLabel && sheetOptions.length <= 1 ? (
-              <div className="sheet-row">
-                <span className="sheet-label">Feuille</span>
-                <span className="pill">{sheetLabel}</span>
-              </div>
-            ) : null}
-            <div className="odoo-status">
-              <span className="odoo-label">Odoo</span>
+              <h2>1. Connexion Odoo (prioritaire)</h2>
               <span className={`pill ${odooConnected ? "pill--ok" : "pill--ghost"}`}>
                 {odooConnected ? "Connecte" : "Non connecte"}
               </span>
             </div>
-            <p className="hint">
-              Colonnes attendues: R (Article), T (EAN), AM (Prix Club), AN (Prix
-              Public).
-            </p>
+            <div className="file-row">
+              <input
+                type="text"
+                placeholder="URL Odoo"
+                value={odooConfig.baseUrl}
+                onChange={(e) =>
+                  setOdooConfig((prev) => ({ ...prev, baseUrl: e.target.value }))
+                }
+              />
+              <input
+                type="text"
+                placeholder="Base de donnees"
+                value={odooConfig.db}
+                onChange={(e) =>
+                  setOdooConfig((prev) => ({ ...prev, db: e.target.value }))
+                }
+              />
+              <input
+                type="text"
+                placeholder="Utilisateur"
+                value={odooConfig.username}
+                onChange={(e) =>
+                  setOdooConfig((prev) => ({ ...prev, username: e.target.value }))
+                }
+              />
+              <input
+                type="password"
+                placeholder="Mot de passe"
+                value={odooConfig.password}
+                onChange={(e) =>
+                  setOdooConfig((prev) => ({ ...prev, password: e.target.value }))
+                }
+              />
+            </div>
+            <div className="actions">
+              <button type="button" onClick={connectOdoo} disabled={odooLoading}>
+                {odooLoading ? "Connexion..." : "Connecter"}
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                onClick={disconnectOdoo}
+              >
+                Deconnecter
+              </button>
+              <button type="button" className="ghost" onClick={testOdoo}>
+                Tester
+              </button>
+            </div>
+            {odooError ? <p className="hint">{odooError}</p> : null}
           </div>
 
           <div className="card">
             <div className="card__header">
-              <h2>2. Recherche</h2>
+              <h2>2. Recherche (Odoo)</h2>
               <span className="pill pill--ghost">EAN ou Article</span>
             </div>
             <div className="search-row">
-              <label className="sr-only" htmlFor="source-select">
-                Source
-              </label>
-              <select
-                id="source-select"
-                value={dataSource}
-                onChange={(event) =>
-                  setDataSource(event.target.value as "excel" | "odoo")
-                }
-              >
-                <option value="excel" disabled={!records.length}>
-                  Excel
-                </option>
-                <option value="odoo" disabled={!odooConnected}>
-                  Odoo
-                </option>
-              </select>
               <label className="sr-only" htmlFor="search-type">
                 Type
               </label>
@@ -947,12 +692,12 @@ export default function Home() {
                 onChange={(event) => setSearchInput(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
-                    runSearch();
+                    searchOdoo();
                   }
                 }}
                 placeholder="3393456827961, CFIFQ7#ROC01"
               />
-              <button type="button" onClick={runSearch}>
+              <button type="button" onClick={searchOdoo}>
                 Chercher
               </button>
               <button type="button" className="ghost" onClick={clearSearch}>
@@ -974,6 +719,7 @@ export default function Home() {
                 <thead>
                   <tr>
                     <th>Article</th>
+                    <th>Nom</th>
                     <th>EAN</th>
                     <th>Prix Club</th>
                     <th>Prix Public</th>
@@ -987,6 +733,7 @@ export default function Home() {
                       onClick={() => setSelectedIndex(index)}
                     >
                       <td>{record.article || "-"}</td>
+                      <td>{record.name || "-"}</td>
                       <td>{record.ean || "-"}</td>
                       <td className="price">{formatPrice(record.prixClub)}</td>
                       <td>{formatPrice(record.prixPublic)}</td>
@@ -1092,7 +839,7 @@ export default function Home() {
             <div className="preview-frame">
               <div className="label" style={previewStyle}>
                 <div className="label__article">
-                  {selectedRecord?.article || "-"}
+                  {selectedRecord?.name || selectedRecord?.article || "-"}
                 </div>
                 <div className="label__price">
                   {selectedRecord ? formatPrice(selectedRecord.prixClub) : "-"}
@@ -1135,111 +882,23 @@ export default function Home() {
                   transform: `translate(${printOffsetX}mm, ${printOffsetY}mm)`,
                 }}
               >
-                <div className="label__article">{record.article || "-"}</div>
-                <div className="label__price">Prix Club: {formatPriceWithSeparator(record.prixClub)}</div>
+                <div className="label__article">{record.name || record.article || "-"}</div>
+                <div className="label__price">{formatPriceWithSeparator(record.prixClub)}</div>
                 <div className="label__public">
-                  Prix Grand Public: {formatPriceWithSeparator(record.prixPublic)}
+                  {formatPriceWithSeparator(record.prixPublic)}
                 </div>
+                <Barcode
+                  value={record.ean || ""}
+                  heightPx={printBarcode.heightPx}
+                  widthPx={printBarcode.widthPx}
+                  fontSize={printBarcode.fontSize}
+                  displayValue={printBarcode.displayValue}
+                />
               </div>
             </div>
           );
         })}
       </div>
-
-      {odooModalOpen ? (
-        <div
-          className="modal-backdrop"
-          role="presentation"
-          onClick={() => setOdooModalOpen(false)}
-        >
-          <div
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Connexion Odoo"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="modal__header">
-              <h3>Connexion Odoo</h3>
-              <button
-                type="button"
-                className="ghost"
-                onClick={() => setOdooModalOpen(false)}
-              >
-                Fermer
-              </button>
-            </div>
-            <div className="modal__body">
-              <div className="field">
-                <label htmlFor="odoo-url">URL Odoo</label>
-                <input
-                  id="odoo-url"
-                  type="text"
-                  value={odooConfig.baseUrl}
-                  onChange={(event) =>
-                    setOdooConfig((prev) => ({
-                      ...prev,
-                      baseUrl: event.target.value,
-                    }))
-                  }
-                  placeholder="https://odoo.mondomaine.com"
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="odoo-db">Base de donnees</label>
-                <input
-                  id="odoo-db"
-                  type="text"
-                  value={odooConfig.db}
-                  onChange={(event) =>
-                    setOdooConfig((prev) => ({
-                      ...prev,
-                      db: event.target.value,
-                    }))
-                  }
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="odoo-user">Utilisateur</label>
-                <input
-                  id="odoo-user"
-                  type="text"
-                  value={odooConfig.username}
-                  onChange={(event) =>
-                    setOdooConfig((prev) => ({
-                      ...prev,
-                      username: event.target.value,
-                    }))
-                  }
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="odoo-pass">Mot de passe</label>
-                <input
-                  id="odoo-pass"
-                  type="password"
-                  value={odooConfig.password}
-                  onChange={(event) =>
-                    setOdooConfig((prev) => ({
-                      ...prev,
-                      password: event.target.value,
-                    }))
-                  }
-                />
-              </div>
-              {odooError ? <div className="modal__error">{odooError}</div> : null}
-            </div>
-            <div className="modal__actions">
-              <button type="button" className="ghost" onClick={testOdoo}>
-                Tester
-              </button>
-              <button type="button" onClick={connectOdoo} disabled={odooLoading}>
-                {odooLoading ? "Connexion..." : "Connecter"}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
 
       <style>{`@page { size: ${labelWidth}mm ${labelHeight}mm; margin: 0; }
 @media print { html, body { width: ${labelWidth}mm; height: ${labelHeight}mm; margin: 0; } }`}</style>
