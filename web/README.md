@@ -1,34 +1,68 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Etiquettes UI (Next.js)
 
-## Getting Started
+Interface web pour la recherche produits et la gestion/Impression des Clients Club Card via Odoo (JSON-RPC).
 
-First, run the development server:
+## Prerequis
+- Node.js 18+ (recommande)
+- npm
+
+## Installation
+Depuis le dossier `web` :
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Lancer le serveur (dev)
+```bash
+npm run dev
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Ouvrir http://localhost:3000
 
-## Learn More
+## Build & Start (prod)
+```bash
+npm run build
+npm run start
+```
 
-To learn more about Next.js, take a look at the following resources:
+## Utilisation de l'interface
+1) Connexion Odoo  
+   - Renseigner `Base URL`, `DB`, `Username`, `Password`.
+   - Utiliser l'URL racine Odoo (ex: `https://mon-odoo.com` sans `/web`).
+   - La config est sauvegardee en session (sessionStorage).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+2) Recherche produits  
+   - Entrer un EAN / reference / nom.
+   - Les prix Club/Public sont calcules via l'API Odoo.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+3) Clients Club Card  
+   - Bouton **Charger depuis Odoo** pour charger la premiere page.
+   - Recherche serveur via le champ "Recherche Odoo".
+   - Pagination via **Charger +10**.
+   - Impression par ligne (bouton **Imprimer**) : nom + barcode (CODE128) + code.
+   - Si popup bloquee, l'impression bascule sur un iframe cache.
 
-## Deploy on Vercel
+## Scripts utiles
+```bash
+npm run dev     # dev server
+npm run build   # build prod
+npm run start   # run prod
+npm run lint    # lint
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Points techniques
+- Routes API Odoo :
+  - `app/api/odoo/search` (recherche produits)
+  - `app/api/odoo/club-card` (clients Club Card, pagination + recherche)
+- Impression Club Card :
+  - `lib/club-card/print.ts`
+- Types/utilitaires :
+  - `lib/club-card/types.ts`
+  - `lib/utils/format.ts`
+  - `lib/odoo/constants.ts`
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Troubleshooting
+- **Popup bloque** : autoriser les popups pour l'impression.
+- **Erreur Odoo** : verifier l'URL racine et les identifiants.
+- **Recherche Club Card vide** : verifier le modele expose et les champs disponibles (route `club-card` loggue le modele/fields en dev).
