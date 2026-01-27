@@ -1,6 +1,23 @@
-"use client";
+﻿"use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { LoadingIndicator } from "@/components/application/loading-indicator/loading-indicator";
+import { printClubLabel } from "@/lib/club-card/print";
+import type { ClubCard, ClubSuggestion, ColumnDef, ColumnStat } from "@/lib/club-card/types";
+import { ODOO_SESSION_KEY, DEFAULT_ODOO_CONFIG, CLUB_PAGE_SIZE } from "@/lib/odoo/constants";
+import type { OdooConfig } from "@/lib/odoo/types";
+import type { PrinterStatus } from "@/lib/printer/types";
+import {
+  normalizeText,
+  formatPrice,
+  formatPriceWithSeparator,
+  formatDate,
+  formatStatus,
+  escapeHtml,
+  splitInput,
+  readJsonResponse,
+} from "@/lib/utils/format";
 
 type RecordItem = {
   row: number;
@@ -11,251 +28,67 @@ type RecordItem = {
   prixPublic: unknown;
 };
 
-type OdooConfig = {
-  baseUrl: string;
-  db: string;
-  username: string;
-  password: string;
+const DEFAULT_ODOO_CONFIG_STATE: OdooConfig = {
+  ...DEFAULT_ODOO_CONFIG,
 };
 
-type JsBarcodeFn = (
-  element: SVGSVGElement,
-  value: string,
-  options: Record<string, unknown>
-) => void;
+const COLUMN_VISIBILITY_THRESHOLD = 0.05; // 5% de valeurs non vides minimum
 
-type PrinterStatus = {
-  available: boolean;
-  status:
-    | "ready"
-    | "offline"
-    | "error"
-    | "unknown"
-    | "unavailable"
-    | "unsupported";
-  name?: string;
+function computeColumnStats(cards: ClubCard[], columns: ColumnDef[]): ColumnStat[] {
+  const total = cards.length || 1;
+  return columns.map((col) => {
+    const nonEmpty = cards.reduce((count, card) => {
+      const value = col.accessor(card);
+      const normalized = normalizeText(value);
+      return normalized ? count + 1 : count;
+    }, 0);
+    return { key: col.key, nonEmpty, ratio: nonEmpty / total };
+  });
+}
+
+function isColumnVisible(col: ColumnDef, stats: ColumnStat[], cards: ClubCard[]) {
+  if (col.mandatory) return true;
+  const stat = stats.find((s) => s.key === col.key);
+  if (!stat) return false;
+  // si aucune donnÃ©e mais pas de cards, on garde au moins code/client
+  if (!cards.length && (col.key === "code" || col.key === "client")) return true;
+  return stat.ratio >= COLUMN_VISIBILITY_THRESHOLD;
+}
+
+const LineSpinnerDemo = () => {
+  return <LoadingIndicator type="line-spinner" size="md" />;
 };
-
-const PX_PER_MM = 3.78;
-const ODOO_SESSION_KEY = "odooSession";
-function extractDigits(value: unknown) {
-  if (value == null) {
-    return null;
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return String(Math.trunc(value));
-  }
-  const digits = String(value).replace(/\D+/g, "");
-  return digits ? digits : null;
-}
-
-function computeEan13CheckDigit(digits12: string) {
-  let sum = 0;
-  for (let i = 0; i < 12; i += 1) {
-    const digit = Number(digits12[i]);
-    sum += i % 2 === 0 ? digit : digit * 3;
-  }
-  const mod = sum % 10;
-  return String(mod === 0 ? 0 : 10 - mod);
-}
-
-function toEan13(value: unknown) {
-  const digits = extractDigits(value);
-  if (!digits) {
-    return null;
-  }
-  if (digits.length === 12) {
-    return `${digits}${computeEan13CheckDigit(digits)}`;
-  }
-  if (digits.length === 13) {
-    return digits;
-  }
-  return null;
-}
-
-function formatPrice(value: unknown) {
-  if (value == null || value === "") {
-    return "-";
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    if (Number.isInteger(value)) {
-      return String(Math.trunc(value));
-    }
-    return String(value);
-  }
-  const text = String(value).trim();
-  return text || "-";
-}
-
-function formatPriceWithSeparator(value: unknown) {
-  const price = formatPrice(value);
-  if (price === "-") {
-    return price;
-  }
-  // Ajouter des séparateurs d'espace tous les 3 chiffres de droite à gauche
-  return price.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
-}
-
-function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function splitInput(text: string) {
-  if (!text) {
-    return [];
-  }
-  return text
-    .split(/[;,]/g)
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
-async function readJsonResponse(response: Response) {
-  const text = await response.text();
-  if (!text) {
-    return {};
-  }
-  try {
-    return JSON.parse(text) as Record<string, unknown>;
-  } catch {
-    return {
-      message: `Reponse non JSON (${response.status})`,
-      raw: text.slice(0, 200),
-    };
-  }
-}
-
-function barcodeOptions(
-  heightMm: number,
-  scale: number,
-  displayValue: boolean,
-) {
-  const ratio = displayValue ? 0.40 : 0.35;
-  const heightPx = Math.max(
-    8,
-    Math.round(heightMm * PX_PER_MM * ratio * scale),
-  );
-  const moduleMm = 0.30;
-  const widthPx = Math.max(
-    1,
-    Math.round(moduleMm * PX_PER_MM * scale),
-  );
-  const fontSize = Math.max(10, Math.round(9 * scale));
-  return { heightPx, widthPx, fontSize, displayValue };
-}
-
-function Barcode({
-  value,
-  heightPx,
-  widthPx,
-  fontSize,
-  displayValue,
-  onRendered,
-}: {
-  value: string;
-  heightPx: number;
-  widthPx: number;
-  fontSize: number;
-  displayValue: boolean;
-  onRendered?: () => void;
-}) {
-  const ref = useRef<SVGSVGElement | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    let rendered = false;
-    const render = async () => {
-      if (!ref.current) {
-        return;
-      }
-      const mod = await import("jsbarcode");
-      const JsBarcode =
-        (mod as unknown as { default?: JsBarcodeFn }).default ??
-        (mod as unknown as JsBarcodeFn);
-      if (!active) {
-        return;
-      }
-      const normalized = toEan13(value) || "";
-      if (!normalized) {
-        ref.current.innerHTML = "";
-        if (!rendered) {
-          rendered = true;
-          onRendered?.();
-        }
-        return;
-      }
-      const options = {
-        height: heightPx,
-        width: widthPx,
-        displayValue,
-        fontSize,
-        margin: 0,
-      };
-      try {
-        JsBarcode(ref.current, normalized, {
-          ...options,
-          format: "EAN13",
-        });
-        if (!rendered) {
-          rendered = true;
-          onRendered?.();
-        }
-      } catch {
-        ref.current.innerHTML = "";
-        if (!rendered) {
-          rendered = true;
-          onRendered?.();
-        }
-      }
-    };
-    render();
-    return () => {
-      active = false;
-    };
-  }, [value, heightPx, widthPx, fontSize, displayValue, onRendered]);
-
-  return <svg ref={ref} className="barcode" />;
-}
 
 export default function Home() {
   const [filtered, setFiltered] = useState<RecordItem[]>([]);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
-  const [status, setStatus] = useState("Connectez-vous a Odoo");
+  const [status, setStatus] = useState("Connexion Odoo en cours...");
   const [printerStatus, setPrinterStatus] = useState<PrinterStatus>({
     available: false,
     status: "unknown",
   });
-  const [searchType, setSearchType] = useState<"EAN" | "Article">("EAN");
+  const [searchType, setSearchType] = useState<"EAN" | "Article" | "Nom">(
+    "EAN",
+  );
   const [searchInput, setSearchInput] = useState("");
   const [labelWidth, setLabelWidth] = useState(50);
   const [labelHeight, setLabelHeight] = useState(25);
-  const [previewScale, setPreviewScale] = useState(2);
   const [printOffsetX, setPrintOffsetX] = useState(0);
   const [printOffsetY, setPrintOffsetY] = useState(0);
   const [odooConnected, setOdooConnected] = useState(false);
   const [odooLoading, setOdooLoading] = useState(false);
-  const [odooError, setOdooError] = useState("");
   const [odooConfig, setOdooConfig] = useState<OdooConfig>({
-    baseUrl: "",
-    db: "",
-    username: "",
-    password: "",
+    ...DEFAULT_ODOO_CONFIG_STATE,
   });
-  const selectedRecord =
-    selectedIndex != null ? filtered[selectedIndex] : null;
-
-  const previewStyle = {
-    width: `${labelWidth * PX_PER_MM * previewScale}px`,
-    height: `${labelHeight * PX_PER_MM * previewScale}px`,
-  };
-
-  const previewBarcode = barcodeOptions(labelHeight, previewScale, true);
-  const printBarcode = barcodeOptions(labelHeight, 1, false);
+  const [clubCards, setClubCards] = useState<ClubCard[]>([]);
+  const [clubLoading, setClubLoading] = useState(false);
+  const [clubStatus, setClubStatus] = useState("Club Card non chargee");
+  const [clubFilter, setClubFilter] = useState("");
+  const [clubTotal, setClubTotal] = useState<number | null>(null);
+  const [clubModuleInfo, setClubModuleInfo] = useState<unknown[]>([]);
+  const [clubOffset, setClubOffset] = useState(0);
+  const [clubHasMore, setClubHasMore] = useState(false);
+  const [clubSuggestions, setClubSuggestions] = useState<ClubSuggestion[]>([]);
 
   const printerLabel = useMemo(() => {
     switch (printerStatus.status) {
@@ -273,6 +106,43 @@ export default function Home() {
         return "Statut inconnu";
     }
   }, [printerStatus.status]);
+
+  const clubColumns = useMemo<ColumnDef[]>(
+    () => [
+      { key: "code", label: "Code", accessor: (c) => c.code, mandatory: true },
+      { key: "client", label: "Client", accessor: (c) => c.client, mandatory: true },
+      { key: "email", label: "Email", accessor: (c) => c.email },
+      { key: "telephone", label: "Telephone", accessor: (c) => c.telephone },
+      { key: "points", label: "Points/Solde", accessor: (c) => c.points ?? c.balance },
+      { key: "statut", label: "Statut", accessor: (c) => c.statut, format: formatStatus },
+      { key: "date_fin", label: "Date fin", accessor: (c) => c.date_fin, format: formatDate },
+    ],
+    [],
+  );
+
+  const orderedClubCards = useMemo(() => {
+    const list = [...clubCards];
+    list.sort((a, b) =>
+      (a.client || "").localeCompare(b.client || "", "fr", { sensitivity: "base" }),
+    );
+    return list;
+  }, [clubCards]);
+
+  const filteredClubCards = orderedClubCards;
+
+  const clubStats = useMemo(
+    () => computeColumnStats(filteredClubCards, clubColumns),
+    [filteredClubCards, clubColumns],
+  );
+
+  const visibleColumns = useMemo(
+    () =>
+      clubColumns.filter((col) => isColumnVisible(col, clubStats, filteredClubCards)),
+    [clubColumns, clubStats, filteredClubCards],
+  );
+
+  const hiddenColumns = clubColumns.length - visibleColumns.length;
+  const partialData = filteredClubCards.length > 0 && hiddenColumns > 0;
 
   useEffect(() => {
     let active = true;
@@ -307,16 +177,16 @@ export default function Home() {
       return;
     }
     const saved = window.sessionStorage.getItem(ODOO_SESSION_KEY);
-    if (!saved) {
-      return;
+    let config = DEFAULT_ODOO_CONFIG_STATE;
+    if (saved) {
+      try {
+        config = JSON.parse(saved) as OdooConfig;
+      } catch {
+        window.sessionStorage.removeItem(ODOO_SESSION_KEY);
+      }
     }
-    try {
-      const parsed = JSON.parse(saved) as OdooConfig;
-      setOdooConfig(parsed);
-      connectWithConfig(parsed, true);
-    } catch {
-      window.sessionStorage.removeItem(ODOO_SESSION_KEY);
-    }
+    setOdooConfig(config);
+    connectWithConfig(config, true);
   }, []);
 
   const clearSearch = () => {
@@ -328,7 +198,6 @@ export default function Home() {
 
   const connectWithConfig = async (config: OdooConfig, silent = false) => {
     setOdooLoading(true);
-    setOdooError("");
     try {
       if (!silent) {
         setStatus("Connexion Odoo...");
@@ -353,20 +222,14 @@ export default function Home() {
         window.sessionStorage.setItem(ODOO_SESSION_KEY, JSON.stringify(config));
       }
       return true;
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Connexion impossible";
+    } catch {
       setOdooConnected(false);
-      setOdooError(message);
       setStatus("Connexion Odoo echouee");
       return false;
     } finally {
       setOdooLoading(false);
     }
   };
-
-  const testOdoo = async () => connectWithConfig(odooConfig, false);
-  const connectOdoo = async () => connectWithConfig(odooConfig, false);
 
   const searchOdoo = async () => {
     const parts = splitInput(searchInput);
@@ -402,7 +265,9 @@ export default function Home() {
       const results = (data.records || []) as RecordItem[];
       setFiltered(results);
       setSelectedIndex(results.length ? 0 : null);
-      setStatus(results.length ? `Resultats: ${results.length}` : "Aucun resultat");
+      setStatus(
+        results.length ? `Resultats: ${results.length}` : "Aucun resultat",
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Erreur Odoo";
       setStatus(message);
@@ -413,56 +278,138 @@ export default function Home() {
     }
   };
 
-  const buildPrintHtml = async (selection: RecordItem[]) => {
-    const mod = await import("jsbarcode");
-    const JsBarcode =
-      (mod as unknown as { default?: JsBarcodeFn }).default ??
-      (mod as unknown as JsBarcodeFn);
-    const cache = new Map<string, string>();
-    const barcodeDataUrl = (value: string) => {
-      const normalized = toEan13(value);
-      if (!normalized) {
-        return "";
-      }
-      const cached = cache.get(normalized);
-      if (cached) {
-        return cached;
-      }
-      const canvas = document.createElement("canvas");
-      try {
-        JsBarcode(canvas, normalized, {
-          format: "EAN13",
-          height: printBarcode.heightPx,
-          width: printBarcode.widthPx,
-          displayValue: false,
-          margin: 0,
-        });
-      } catch {
-        return "";
-      }
-      const url = canvas.toDataURL("image/png");
-      cache.set(normalized, url);
-      return url;
-    };
+  const fetchClubCards = async (options: {
+    append?: boolean;
+    offsetOverride?: number;
+    queryOverride?: string;
+  } = {}) => {
+    if (!odooConnected) {
+      setClubStatus("Odoo non connecte");
+      return;
+    }
 
+    const append = options.append ?? false;
+    const query = (options.queryOverride ?? clubFilter).trim();
+    const nextOffset =
+      options.offsetOverride ?? (append ? clubOffset + CLUB_PAGE_SIZE : 0);
+
+    setClubLoading(true);
+    setClubStatus(
+      append
+        ? "Chargement de clients supplementaires..."
+        : "Chargement des clients Club Card...",
+    );
+
+    try {
+      const response = await fetch("/api/odoo/club-card", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          baseUrl: odooConfig.baseUrl,
+          db: odooConfig.db,
+          username: odooConfig.username,
+          password: odooConfig.password,
+          limit: CLUB_PAGE_SIZE,
+          offset: nextOffset,
+          q: query || undefined,
+        }),
+      });
+
+      const data = await readJsonResponse(response);
+      if (!response.ok) {
+        const message =
+          typeof data.message === "string" ? data.message : "Erreur Club Card";
+        throw new Error(message);
+      }
+
+      const cards = Array.isArray((data as { cards?: unknown[] }).cards)
+        ? ((data as { cards?: unknown[] }).cards as ClubCard[])
+        : [];
+
+      const total =
+        typeof (data as { total?: unknown }).total === "number"
+          ? (data as { total?: number }).total
+          : cards.length;
+
+      const moduleInfo =
+        Array.isArray((data as { moduleInfo?: unknown }).moduleInfo) &&
+        (data as { moduleInfo?: unknown[] }).moduleInfo
+          ? ((data as { moduleInfo?: unknown[] }).moduleInfo as unknown[])
+          : [];
+
+      const suggestions = Array.isArray(
+        (data as { suggestions?: unknown[] }).suggestions,
+      )
+        ? ((data as { suggestions?: unknown[] }).suggestions as ClubSuggestion[])
+        : [];
+
+      const hasMore =
+        (data as { has_more?: unknown }).has_more === true ||
+        (typeof total === "number" && total > nextOffset + cards.length);
+
+      const nextCount = append ? clubCards.length + cards.length : cards.length;
+
+      setClubModuleInfo(moduleInfo);
+      setClubTotal(total);
+      setClubOffset(nextOffset);
+      setClubHasMore(Boolean(hasMore));
+      setClubCards((prev) => (append ? [...prev, ...cards] : cards));
+      setClubSuggestions(suggestions);
+      setClubStatus(
+        nextCount
+          ? `Clients chargés: ${nextCount}/${total ?? nextCount}`
+          : "Aucun client trouve",
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Erreur Club Card";
+      setClubStatus(message);
+      setClubCards([]);
+      setClubTotal(null);
+      setClubModuleInfo([]);
+      setClubHasMore(false);
+      setClubOffset(0);
+      setClubSuggestions([]);
+    } finally {
+      setClubLoading(false);
+    }
+  };
+
+  const loadClubCards = async () => {
+    setClubOffset(0);
+    await fetchClubCards({ append: false, offsetOverride: 0 });
+  };
+
+  const loadNextClubPage = async () => {
+    if (clubLoading || !clubHasMore) return;
+    await fetchClubCards({
+      append: true,
+      offsetOverride: clubOffset + CLUB_PAGE_SIZE,
+    });
+  };
+
+  useEffect(() => {
+    if (!odooConnected) return;
+    const timer = window.setTimeout(() => {
+      fetchClubCards({ append: false, offsetOverride: 0 });
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [clubFilter, odooConnected]);
+
+  const buildPrintHtml = async (selection: RecordItem[]) => {
     const pages = selection
       .map((record) => {
-        const article = escapeHtml(record.name || record.article || "-");
+        const article = escapeHtml(record.article || "-");
         const prixClub = escapeHtml(formatPriceWithSeparator(record.prixClub));
-        const prixPublic = escapeHtml(formatPriceWithSeparator(record.prixPublic));
-        const barcode = barcodeDataUrl(record.ean || "");
-        const barcodeHtml = barcode
-          ? `<img class="barcode" src="${barcode}" alt="Code-barres ${escapeHtml(
-              record.ean || "",
-            )}" />`
-          : `<div class="barcode empty"></div>`;
+        const prixPublic = escapeHtml(
+          formatPriceWithSeparator(record.prixPublic),
+        );
         return `
 <div class="print-page">
   <div class="label" style="transform: translate(${printOffsetX}mm, ${printOffsetY}mm);">
     <div class="label__article">${article}</div>
-    <div class="label__price">${prixClub}</div>
-    <div class="label__public">${prixPublic}</div>
-    ${barcodeHtml}
+    <div class="label__price">Prix Club: ${prixClub}</div>
+    <div class="label__public">Prix Public: ${prixPublic}</div>
   </div>
 </div>`;
       })
@@ -478,19 +425,19 @@ export default function Home() {
       html, body { margin: 0; padding: 0; width: ${labelWidth}mm; height: ${labelHeight}mm; }
       @page { size: ${labelWidth}mm ${labelHeight}mm; margin: 0 !important; }
       .print-page { width: ${labelWidth}mm; height: ${labelHeight}mm; page-break-after: always; break-after: page; position: relative; overflow: hidden; }
-      .label { width: ${labelWidth}mm; height: ${labelHeight}mm; position: absolute; top: 0; left: 0; transform-origin: top left; border: none; border-radius: 0; padding: 3px; display: flex; flex-direction: column; align-items: center; justify-content: space-between; text-align: center; font-family: Arial, sans-serif; }
-      .label__article { font-weight: 700; font-size: 20px; letter-spacing: 0.08em; text-transform: uppercase; flex-shrink: 0; }
-      .label__price { font-weight: 700; font-size: 18px; color: #d62828; flex-shrink: 0; line-height: 1.1; }
-      .label__public { font-size: 16px; font-weight: 600; flex-shrink: 0; }
-      .barcode { width: 100%; height: auto; display: block; }
-      .barcode.empty { height: 24px; }
+      .label { width: ${labelWidth}mm; height: ${labelHeight}mm; position: absolute; top: 0; left: 0; transform-origin: top left; border: none; border-radius: 0; padding: 4px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; text-align: center; font-family: Arial, sans-serif; }
+      .label__article { font-weight: 700; font-size: 18px; letter-spacing: 0.08em; text-transform: uppercase; }
+      .label__price { font-weight: 700; font-size: 14px; color: #d62828; line-height: 1.1; }
+      .label__public { font-size: 14px; font-weight: 700; line-height: 1.1; }
     </style>
   </head>
   <body>
     ${pages}
-  </body>
+      </body>
 </html>`;
   };
+
+  // impression deleguÃ©e Ã  lib/club-card/print
 
   const printLabels = async (selection: RecordItem[]) => {
     if (!selection.length) {
@@ -523,16 +470,6 @@ export default function Home() {
       const message =
         error instanceof Error ? error.message : "Erreur impression";
       setStatus(message);
-    }
-  };
-
-  const disconnectOdoo = () => {
-    setOdooConnected(false);
-    setFiltered([]);
-    setSelectedIndex(null);
-    setStatus("Deconnecte");
-    if (typeof window !== "undefined") {
-      window.sessionStorage.removeItem(ODOO_SESSION_KEY);
     }
   };
 
@@ -583,7 +520,7 @@ export default function Home() {
       <header className="hero">
         <div className="hero__content">
           <div className="hero__kicker-row">
-            <div className="kicker">Etiquettes UI</div>
+            <div className="kicker">Etiquettes plus</div>
             <div
               className="printer-status printer-status--hero"
               data-status={printerStatus.status}
@@ -597,7 +534,7 @@ export default function Home() {
           </div>
           <h1>Recherche rapide, etiquette claire, impression directe.</h1>
           <p>
-            Connectez-vous a Odoo, recherchez par EAN ou Article, puis imprimez.
+            Recherchez par code barres, Article ou Nom, puis imprimez.
           </p>
         </div>
         <div className="hero__status">
@@ -609,67 +546,8 @@ export default function Home() {
         <section className="panel">
           <div className="card">
             <div className="card__header">
-              <h2>1. Connexion Odoo (prioritaire)</h2>
-              <span className={`pill ${odooConnected ? "pill--ok" : "pill--ghost"}`}>
-                {odooConnected ? "Connecte" : "Non connecte"}
-              </span>
-            </div>
-            <div className="file-row">
-              <input
-                type="text"
-                placeholder="URL Odoo"
-                value={odooConfig.baseUrl}
-                onChange={(e) =>
-                  setOdooConfig((prev) => ({ ...prev, baseUrl: e.target.value }))
-                }
-              />
-              <input
-                type="text"
-                placeholder="Base de donnees"
-                value={odooConfig.db}
-                onChange={(e) =>
-                  setOdooConfig((prev) => ({ ...prev, db: e.target.value }))
-                }
-              />
-              <input
-                type="text"
-                placeholder="Utilisateur"
-                value={odooConfig.username}
-                onChange={(e) =>
-                  setOdooConfig((prev) => ({ ...prev, username: e.target.value }))
-                }
-              />
-              <input
-                type="password"
-                placeholder="Mot de passe"
-                value={odooConfig.password}
-                onChange={(e) =>
-                  setOdooConfig((prev) => ({ ...prev, password: e.target.value }))
-                }
-              />
-            </div>
-            <div className="actions">
-              <button type="button" onClick={connectOdoo} disabled={odooLoading}>
-                {odooLoading ? "Connexion..." : "Connecter"}
-              </button>
-              <button
-                type="button"
-                className="ghost"
-                onClick={disconnectOdoo}
-              >
-                Deconnecter
-              </button>
-              <button type="button" className="ghost" onClick={testOdoo}>
-                Tester
-              </button>
-            </div>
-            {odooError ? <p className="hint">{odooError}</p> : null}
-          </div>
-
-          <div className="card">
-            <div className="card__header">
-              <h2>2. Recherche (Odoo)</h2>
-              <span className="pill pill--ghost">EAN ou Article</span>
+              <h2>Recherche</h2>
+              <span className="pill pill--ghost">EAN, Article ou Nom</span>
             </div>
             <div className="search-row">
               <label className="sr-only" htmlFor="search-type">
@@ -679,11 +557,12 @@ export default function Home() {
                 id="search-type"
                 value={searchType}
                 onChange={(event) =>
-                  setSearchType(event.target.value as "EAN" | "Article")
+                  setSearchType(event.target.value as "EAN" | "Article" | "Nom")
                 }
               >
-                <option value="EAN">EAN</option>
-                <option value="Article">Article</option>
+                <option value="EAN">Code barres</option>
+                <option value="Article">Reference</option>
+                <option value="Nom">Nom d&apos;article</option>
               </select>
               <input
                 id="search-input"
@@ -711,8 +590,11 @@ export default function Home() {
 
           <div className="card">
             <div className="card__header">
-              <h2>3. Resultats</h2>
-              <span className="pill">{filtered.length}</span>
+              <h2>Resultats</h2>
+              <div className="card__header-right">
+                {odooLoading ? <LineSpinnerDemo /> : null}
+                <span className="pill">{filtered.length}</span>
+              </div>
             </div>
             <div className="table-wrap">
               <table>
@@ -755,13 +637,11 @@ export default function Home() {
               Telecharger etiquettes
             </button>
           </div>
-        </section>
 
-        <section className="preview">
-          <div className="card card--full">
+          <div className="card">
             <div className="card__header">
-              <h2>Preview etiquette</h2>
-              <span className="pill pill--ghost">Centree sans intitules</span>
+              <h2>Format etiquette</h2>
+              <span className="pill pill--ghost">Impression</span>
             </div>
             <div className="size-row">
               <div className="field">
@@ -794,20 +674,6 @@ export default function Home() {
                   }
                 />
               </div>
-              <div className="field field--range">
-                <label htmlFor="preview-scale">Zoom preview</label>
-                <input
-                  id="preview-scale"
-                  type="range"
-                  min="1"
-                  max="6"
-                  step="1"
-                  value={previewScale}
-                  onChange={(event) =>
-                    setPreviewScale(Number(event.target.value))
-                  }
-                />
-              </div>
               <div className="field">
                 <label htmlFor="print-offset-x">Decalage X (mm)</label>
                 <input
@@ -835,37 +701,174 @@ export default function Home() {
                 />
               </div>
             </div>
+            <p className="hint">
+              Ces valeurs sont utilisees pour l&apos;impression et le telechargement.
+            </p>
+          </div>
+        </section>
 
-            <div className="preview-frame">
-              <div className="label" style={previewStyle}>
-                <div className="label__article">
-                  {selectedRecord?.name || selectedRecord?.article || "-"}
-                </div>
-                <div className="label__price">
-                  {selectedRecord ? formatPrice(selectedRecord.prixClub) : "-"}
-                </div>
-                <div className="label__public">
-                  {selectedRecord ? formatPrice(selectedRecord.prixPublic) : "-"}
-                </div>
-                <Barcode
-                  value={selectedRecord?.ean || ""}
-                  heightPx={previewBarcode.heightPx}
-                  widthPx={previewBarcode.widthPx}
-                  fontSize={previewBarcode.fontSize}
-                  displayValue={previewBarcode.displayValue}
-                />
+        <section className="preview">
+          <div className="card card--full">
+            <div className="card__header">
+              <h2>Clients Club Card</h2>
+              <div className="card__header-right">
+                {clubLoading ? <LineSpinnerDemo /> : null}
+                <span className="pill">
+                  {clubTotal ?? filteredClubCards.length}
+                </span>
+                {partialData ? (
+                  <span className="pill pill--warn">Donnees partielles</span>
+                ) : null}
               </div>
             </div>
 
-            <div className="note">
-              Astuce: cliquez sur une ligne de resultat pour mettre a jour la
-              preview.
+            <div className="club-card__actions">
+              <div className="club-card__status">
+                <span className="club-status-text">{clubStatus}</span>
+                <span className="meta-muted">
+                  Affiches {clubCards.length} / {clubTotal ?? clubCards.length}
+                </span>
+                {clubModuleInfo.length ? (
+                  <span className="meta-muted">
+                    Modules trouves: {clubModuleInfo.length}
+                  </span>
+                ) : null}
+              </div>
+              <div className="search-row">
+                <input
+                  type="text"
+                  placeholder="Recherche Odoo (code, client, email, telephone)"
+                  value={clubFilter}
+                  onChange={(event) => setClubFilter(event.target.value)}
+                />
+                <button
+                  type="button"
+                  onClick={loadClubCards}
+                  disabled={!odooConnected || clubLoading}
+                >
+                  {odooConnected ? "Charger depuis Odoo" : "Connexion requise"}
+                </button>
+              </div>
+            </div>
+
+            <div className="table-wrap club-table">
+              <table>
+                <thead>
+                  <tr>
+                    {visibleColumns.map((col) => (
+                      <th key={col.key}>{col.label}</th>
+                    ))}
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredClubCards.length === 0 ? (
+                    <tr>
+                      <td colSpan={(visibleColumns.length || 1) + 1} className="empty-row">
+                        Aucun client Club Card
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredClubCards.map((card) => (
+                      <tr key={`${card.id}-${card.code}`}>
+                        {visibleColumns.map((col) => {
+                          const raw = col.accessor(card);
+                          const formatted = col.format
+                            ? col.format(raw)
+                            : normalizeText(raw);
+                          return <td key={col.key}>{formatted}</td>;
+                        })}
+                        <td>
+                          <button
+                            type="button"
+                            className="ghost"
+                            disabled={!normalizeText(card.barcode || card.code)}
+                            title={
+                              normalizeText(card.barcode || card.code)
+                                ? "Imprimer l'etiquette"
+                                : "Code manquant"
+                            }
+                            onClick={() =>
+                              printClubLabel(
+                                { code: card.code, barcode: card.barcode, client: card.client },
+                                setClubStatus,
+                              )
+                            }
+                          >
+                            Imprimer
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+              {partialData ? (
+                <div className="data-partial">
+                  Donnees partielles: {hiddenColumns} colonne(s) masquee(s) faute de donnees.
+                </div>
+              ) : null}
+              <div
+                className="club-pagination"
+                style={{ display: "flex", gap: "12px", alignItems: "center", marginTop: "12px" }}
+              >
+                <span className="meta-muted">
+                  Affiches {filteredClubCards.length} / {clubTotal ?? filteredClubCards.length}
+                </span>
+                <button
+                  type="button"
+                  onClick={loadNextClubPage}
+                  disabled={!clubHasMore || clubLoading}
+                >
+                  {clubHasMore
+                    ? clubLoading
+                      ? "Chargement..."
+                      : `Charger +${CLUB_PAGE_SIZE}`
+                    : "Fin de liste"}
+                </button>
+              </div>
+              {filteredClubCards.length === 0 && clubSuggestions.length ? (
+                <div className="suggestions">
+                  <div className="suggestions__title">Resultats les plus proches</div>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Code</th>
+                        <th>Client</th>
+                        <th>Email</th>
+                        <th>Telephone</th>
+                        <th>Score</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {clubSuggestions.map((sugg) => (
+                        <tr key={`sugg-${sugg.id}-${sugg.code}`}>
+                          <td>{normalizeText(sugg.code) || "-"}</td>
+                          <td>{normalizeText(sugg.client) || "-"}</td>
+                          <td>{normalizeText(sugg.email) || "-"}</td>
+                          <td>{normalizeText(sugg.telephone) || "-"}</td>
+                          <td>{sugg.score != null ? (sugg.score * 100).toFixed(0) + "%" : "-"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
             </div>
           </div>
         </section>
       </main>
 
-      <div id="print-area" aria-hidden={filtered.length === 0}>
+      <div
+        id="print-area"
+        aria-hidden={filtered.length === 0}
+        style={
+          {
+            "--print-width": `${labelWidth}mm`,
+            "--print-height": `${labelHeight}mm`,
+          } as CSSProperties
+        }
+      >
         {filtered.map((record) => {
           const key = `${record.row}-${record.ean}`;
           return (
@@ -882,18 +885,13 @@ export default function Home() {
                   transform: `translate(${printOffsetX}mm, ${printOffsetY}mm)`,
                 }}
               >
-                <div className="label__article">{record.name || record.article || "-"}</div>
-                <div className="label__price">{formatPriceWithSeparator(record.prixClub)}</div>
-                <div className="label__public">
-                  {formatPriceWithSeparator(record.prixPublic)}
+                <div className="label__article">{record.article || "-"}</div>
+                <div className="label__price">
+                  Prix Club: {formatPriceWithSeparator(record.prixClub)}
                 </div>
-                <Barcode
-                  value={record.ean || ""}
-                  heightPx={printBarcode.heightPx}
-                  widthPx={printBarcode.widthPx}
-                  fontSize={printBarcode.fontSize}
-                  displayValue={printBarcode.displayValue}
-                />
+                <div className="label__public">
+                  Prix Public: {formatPriceWithSeparator(record.prixPublic)}
+                </div>
               </div>
             </div>
           );
@@ -905,3 +903,7 @@ export default function Home() {
     </>
   );
 }
+
+
+
+
