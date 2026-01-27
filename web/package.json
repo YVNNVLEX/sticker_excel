@@ -11,9 +11,11 @@
   "dependencies": {
     "better-sqlite3": "^11.10.0",
     "jsbarcode": "^3.12.3",
+    "ldrs": "^1.1.9",
     "next": "16.1.3",
     "react": "19.2.3",
     "react-dom": "19.2.3",
+    "react-icons": "^5.5.0",
     "xlsx": "^0.18.5",
     "xmlrpc": "^1.3.2"
   },

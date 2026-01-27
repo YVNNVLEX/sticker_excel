@@ -133,6 +133,12 @@ select {
   margin-bottom: 14px;
 }
 
+.card__header-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .printer-status {
   display: flex;
   align-items: center;
@@ -211,12 +217,58 @@ select {
   color: #0f3c2f;
 }
 
+.pill--warn {
+  background: rgba(214, 40, 40, 0.12);
+  color: #7a0c0c;
+}
+
+.meta-muted {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .file-row,
 .search-row {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
   align-items: center;
+}
+
+.odoo-row {
+  row-gap: 14px;
+}
+
+.actions--odoo {
+  margin-top: 8px;
+  gap: 14px;
+}
+
+.password-input {
+  min-width: 180px;
+}
+
+.password-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 9px 10px;
+  min-width: 46px;
+  box-shadow: none;
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.icon-button svg {
+  width: 18px;
+  height: 18px;
 }
 
 .odoo-status {
@@ -361,7 +413,7 @@ td.price {
 
 .label {
   background: #fff;
-  border: 1.5px solid #111;
+  border: none;
   border-radius: 0;
   padding: 8px;
   display: flex;
@@ -375,7 +427,7 @@ td.price {
 .label__article {
   font-family: var(--font-rajdhani), sans-serif;
   font-weight: 700;
-  font-size: 12px;
+  font-size: 24px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -383,18 +435,17 @@ td.price {
 .label__price {
   font-family: var(--font-rajdhani), sans-serif;
   font-weight: 700;
-  font-size: 18px;
+  font-size: 16px;
   color: var(--price);
 }
 
 .label__public {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 700;
 }
 
 .barcode {
-  width: 100%;
-  height: auto;
+  display: none;
 }
 
 .size-row {
@@ -425,6 +476,59 @@ td.price {
   margin-top: 10px;
 }
 
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+.club-card__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.club-card__status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.club-status-text {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.partner-name {
+  font-weight: 700;
+}
+
+.meta-muted {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.empty-row {
+  text-align: center;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.data-partial {
+  font-size: 12px;
+  color: #7a0c0c;
+  background: rgba(214, 40, 40, 0.1);
+  padding: 6px 10px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -438,6 +542,8 @@ td.price {
 
 #print-area {
   display: none;
+  --print-width: 50mm;
+  --print-height: 25mm;
 }
 
 .modal-backdrop {
@@ -496,6 +602,8 @@ td.price {
   overflow: hidden;
   page-break-after: always;
   break-after: page;
+  width: var(--print-width);
+  height: var(--print-height);
 }
 
 .print-label {
@@ -525,6 +633,14 @@ td.price {
     visibility: visible;
   }
 
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    width: auto;
+    height: auto;
+  }
+
   * {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
@@ -533,18 +649,30 @@ td.price {
   .label {
     padding: 4px;
     gap: 4px;
+    width: 100%;
+    height: 100%;
+  }
+
+  .print-label {
+    transform-origin: top left;
+  }
+
+  .print-page {
+    margin: 0;
+    page-break-after: always;
+    break-after: page;
   }
 
   .label__article {
-    font-size: 10px;
+    font-size: 11pt;
   }
 
   .label__price {
-    font-size: 16px;
+    font-size: 10pt;
   }
 
   .label__public {
-    font-size: 10px;
+    font-size: 10pt;
   }
 
   #print-area {
@@ -552,9 +680,7 @@ td.price {
     inset: 0;
     padding: 0;
     display: block;
-  }
-
-  .print-page {
-    margin: 0;
+    width: var(--print-width);
+    height: var(--print-height);
   }
 }

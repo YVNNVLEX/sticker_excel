@@ -159,14 +159,17 @@ def create_barcode(value, width_pt, height_pt):
         symbology = "Code128"
     try:
         drawing = createBarcodeDrawing(
-            symbology, value=value, barHeight=height_pt, humanReadable=True
+            symbology, value=value, barHeight=height_pt * 0.7, humanReadable=True
         )
     except Exception:
         drawing = createBarcodeDrawing(
-            "Code128", value=value, barHeight=height_pt, humanReadable=True
+            "Code128", value=value, barHeight=height_pt * 0.7, humanReadable=True
         )
     if drawing.width and drawing.height:
-        scale = min(width_pt / drawing.width, height_pt / drawing.height)
+        # Ensure the barcode fits within the allocated space
+        max_width = width_pt * 0.95
+        max_height = height_pt * 0.9
+        scale = min(max_width / drawing.width, max_height / drawing.height)
         drawing.scale(scale, scale)
     return drawing
 
@@ -182,28 +185,38 @@ def draw_label(c, record, width_pt, height_pt, margin_mm):
     prix_club = format_price(record.get("prix_club"))
     prix_public = format_price(record.get("prix_public"))
 
+    # Draw article code at top
     c.setFont("Helvetica-Bold", 7)
     c.drawString(x, y - 7, f"Article: {article}")
     y -= 7 + line_gap
 
+    # Draw club price (red, largest)
     c.setFont("Helvetica-Bold", 12)
     c.setFillColorRGB(1, 0, 0)
     c.drawString(x, y - 12, f"Prix Club: {prix_club}")
     c.setFillColorRGB(0, 0, 0)
     y -= 12 + line_gap
 
+    # Draw public price
     c.setFont("Helvetica", 7)
     c.drawString(x, y - 7, f"Prix Public: {prix_public}")
     y -= 7 + line_gap
 
-    c.setFont("Helvetica", 6)
-    c.drawString(x, y - 6, f"EAN: {ean}")
-    y -= 6 + line_gap
+    # Reserve space for barcode at bottom
+    barcode_space_mm = 15
+    barcode_y = margin
+    barcode_height = min(barcode_space_mm * mm, y - barcode_y - line_gap)
+    barcode_width = width_pt - 2 * margin
 
-    barcode_height = max(6 * mm, y - margin)
-    barcode_width = max(1 * mm, width_pt - 2 * margin)
+    # Draw EAN label
+    c.setFont("Helvetica", 6)
+    ean_y = barcode_y + barcode_height + 1 * mm
+    if ean_y + 6 < height_pt - margin:
+        c.drawString(x, ean_y, f"EAN: {ean}")
+
+    # Draw barcode at bottom
     barcode = create_barcode(ean, barcode_width, barcode_height)
-    renderPDF.draw(barcode, c, x, margin)
+    renderPDF.draw(barcode, c, x, barcode_y)
 
 
 def generate_pdf(records, output_path, label_width_mm, label_height_mm, margin_mm):

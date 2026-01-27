@@ -111,17 +111,24 @@ async function jsonRpcCall(
   const text = await response.text();
   let data: {
     result?: unknown;
-    error?: { data?: { message?: string }; message?: string };
-  };
+    error?: { data?: { message?: unknown }; message?: unknown };
+  } = {};
   try {
     data = JSON.parse(text);
   } catch {
     throw new Error(`Reponse non JSON de Odoo: ${text.slice(0, 200)}`);
   }
+  const detail =
+    typeof data?.error?.data?.message === "string"
+      ? data.error.data.message
+      : typeof data?.error?.message === "string"
+        ? data.error.message
+        : null;
   if (!response.ok || data.error) {
-    const message =
-      data?.error?.data?.message || data?.error?.message || "Odoo error";
-    throw new Error(message);
+    const fallback = `Odoo error (${response.status} ${response.statusText})`;
+    const snippet = text.slice(0, 200);
+    const message = detail || fallback;
+    throw new Error(`${message}${detail ? "" : ` - ${snippet}`}`);
   }
   return data.result;
 }

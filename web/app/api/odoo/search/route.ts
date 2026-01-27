@@ -9,7 +9,7 @@ type SearchPayload = {
   db?: string;
   username?: string;
   password?: string;
-  searchType?: "EAN" | "Article";
+  searchType?: "EAN" | "Article" | "Nom";
   terms?: string[];
   // optionnel si tu veux des prix dépendants du client
   partnerId?: number;
@@ -321,8 +321,21 @@ export async function POST(request: Request) {
       return NextResponse.json({ records: [] });
     }
 
-    const field = searchType === "EAN" ? FIELD_EAN : FIELD_ARTICLE;
-    const domain = [[field, "in", normalizedTerms]];
+    let domain: unknown[] | unknown[][] = [];
+    if (searchType === "Nom") {
+      if (normalizedTerms.length === 1) {
+        domain = [[FIELD_NAME, "ilike", normalizedTerms[0]]];
+      } else {
+        domain = normalizedTerms.reduce<unknown[]>((acc, term, index) => {
+          const cond = [FIELD_NAME, "ilike", term];
+          if (index === 0) return cond as unknown[];
+          return ["|", cond, acc];
+        }, []);
+      }
+    } else {
+      const field = searchType === "EAN" ? FIELD_EAN : FIELD_ARTICLE;
+      domain = [[field, "in", normalizedTerms]];
+    }
 
     const result = await executeKw(
       transport,

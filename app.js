@@ -68,12 +68,43 @@ function normalizeText(value) {
   return text ? text : null;
 }
 
-function normalizeEAN(value) {
-  const text = normalizeText(value);
-  if (!text) {
+function extractDigits(value) {
+  if (value == null) {
     return null;
   }
-  return text.replace(/\s+/g, "");
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(Math.trunc(value));
+  }
+  const digits = String(value).replace(/\D+/g, "");
+  return digits ? digits : null;
+}
+
+function computeEan13CheckDigit(digits12) {
+  let sum = 0;
+  for (let i = 0; i < 12; i += 1) {
+    const digit = Number(digits12[i]);
+    sum += i % 2 === 0 ? digit : digit * 3;
+  }
+  const mod = sum % 10;
+  return String(mod === 0 ? 0 : 10 - mod);
+}
+
+function toEan13(value) {
+  const digits = extractDigits(value);
+  if (!digits) {
+    return null;
+  }
+  if (digits.length === 12) {
+    return `${digits}${computeEan13CheckDigit(digits)}`;
+  }
+  if (digits.length === 13) {
+    return digits;
+  }
+  return null;
+}
+
+function normalizeEAN(value) {
+  return toEan13(value);
 }
 
 function formatPrice(value) {
@@ -82,9 +113,9 @@ function formatPrice(value) {
   }
   if (typeof value === "number" && Number.isFinite(value)) {
     if (Number.isInteger(value)) {
-      return String(value);
+      return String(Math.trunc(value));
     }
-    return value.toFixed(2);
+    return String(value);
   }
   const text = String(value).trim();
   return text || "-";
