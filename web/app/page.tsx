@@ -507,7 +507,7 @@ export default function Home() {
       const total =
         typeof (data as { total?: unknown }).total === "number"
           ? (data as { total?: number }).total
-          : cards.length;
+          : null;
 
       const moduleInfo =
         Array.isArray((data as { moduleInfo?: unknown }).moduleInfo) &&
@@ -528,7 +528,7 @@ export default function Home() {
       const nextCount = append ? clubCards.length + cards.length : cards.length;
 
       setClubModuleInfo(moduleInfo);
-      setClubTotal(total);
+      setClubTotal(total ?? cards.length);
       setClubOffset(nextOffset);
       setClubHasMore(Boolean(hasMore));
       setClubCards((prev) => (append ? [...prev, ...cards] : cards));
