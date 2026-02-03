@@ -28,11 +28,42 @@ type RecordItem = {
   prixPublic: unknown;
 };
 
+type LocalMeta = {
+  source?: string;
+  sheet?: string;
+  defaultFile?: string;
+};
+
 const DEFAULT_ODOO_CONFIG_STATE: OdooConfig = {
   ...DEFAULT_ODOO_CONFIG,
 };
 
 const COLUMN_VISIBILITY_THRESHOLD = 0.05; // 5% de valeurs non vides minimum
+
+function extractDigits(value: unknown) {
+  if (value == null) return null;
+  if (typeof value === "number" && Number.isFinite(value)) return String(Math.trunc(value));
+  const digits = String(value).replace(/\D+/g, "");
+  return digits ? digits : null;
+}
+
+function computeEan13CheckDigit(digits12: string) {
+  let sum = 0;
+  for (let i = 0; i < 12; i += 1) {
+    const digit = Number(digits12[i]);
+    sum += i % 2 === 0 ? digit : digit * 3;
+  }
+  const mod = sum % 10;
+  return String(mod === 0 ? 0 : 10 - mod);
+}
+
+function toEan13(value: unknown) {
+  const digits = extractDigits(value);
+  if (!digits) return null;
+  if (digits.length === 12) return `${digits}${computeEan13CheckDigit(digits)}`;
+  if (digits.length === 13) return digits;
+  return null;
+}
 
 function computeColumnStats(cards: ClubCard[], columns: ColumnDef[]): ColumnStat[] {
   const total = cards.length || 1;
@@ -70,7 +101,12 @@ export default function Home() {
   const [searchType, setSearchType] = useState<"EAN" | "Article" | "Nom">(
     "EAN",
   );
+  const [dataSource, setDataSource] = useState<"odoo" | "excel">("odoo");
   const [searchInput, setSearchInput] = useState("");
+  const [localRecords, setLocalRecords] = useState<RecordItem[]>([]);
+  const [localMeta, setLocalMeta] = useState<LocalMeta | null>(null);
+  const [localLoaded, setLocalLoaded] = useState(false);
+  const [localLoading, setLocalLoading] = useState(false);
   const [labelWidth, setLabelWidth] = useState(50);
   const [labelHeight, setLabelHeight] = useState(25);
   const [printOffsetX, setPrintOffsetX] = useState(0);
@@ -196,6 +232,126 @@ export default function Home() {
     setStatus("Recherche effacee");
   };
 
+  const loadLocalRecords = async () => {
+    if (localLoading) return null;
+    setLocalLoading(true);
+    try {
+      const response = await fetch("/api/local-db/records", {
+        cache: "no-store",
+      });
+      const data = (await readJsonResponse(response)) as {
+        records?: Array<{
+          article?: unknown;
+          name?: unknown;
+          ean?: unknown;
+          prixClub?: unknown;
+          prixPublic?: unknown;
+        }>;
+        meta?: LocalMeta;
+        message?: string;
+      };
+      if (!response.ok) {
+        const message =
+          typeof data.message === "string" ? data.message : "Erreur base locale";
+        throw new Error(message);
+      }
+      const rows = Array.isArray(data.records) ? data.records : [];
+      const mapped = rows.map((record, index) => ({
+        row: index + 1,
+        article: normalizeText(record.article),
+        name: normalizeText(record.name),
+        ean: normalizeText(record.ean),
+        prixClub: record.prixClub,
+        prixPublic: record.prixPublic,
+      }));
+      setLocalRecords(mapped);
+      setLocalMeta(
+        data.meta && typeof data.meta === "object" ? data.meta : null,
+      );
+      setLocalLoaded(true);
+      return mapped;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Erreur base locale";
+      setStatus(message);
+      setLocalRecords([]);
+      setLocalMeta(null);
+      setLocalLoaded(false);
+      return null;
+    } finally {
+      setLocalLoading(false);
+    }
+  };
+
+  const filterLocalRecords = (records: RecordItem[], parts: string[]) => {
+    if (!parts.length) return [];
+
+    if (searchType === "EAN") {
+      const normalizedTerms = parts
+        .map((term) => toEan13(term))
+        .filter((term): term is string => Boolean(term));
+      if (!normalizedTerms.length) return [];
+      const termSet = new Set(normalizedTerms);
+      return records.filter((record) => {
+        const ean = toEan13(record.ean) || "";
+        return termSet.has(ean);
+      });
+    }
+
+    const normalizedTerms = parts
+      .map((term) => normalizeText(term).toLowerCase())
+      .filter(Boolean);
+    if (!normalizedTerms.length) return [];
+
+    if (searchType === "Nom") {
+      return records.filter((record) => {
+        const name = normalizeText(record.name).toLowerCase();
+        const article = normalizeText(record.article).toLowerCase();
+        return normalizedTerms.some(
+          (term) => name.includes(term) || article.includes(term),
+        );
+      });
+    }
+
+    const termSet = new Set(normalizedTerms);
+    return records.filter((record) => {
+      const article = normalizeText(record.article).toLowerCase();
+      return termSet.has(article);
+    });
+  };
+
+  const searchLocal = async () => {
+    const parts = splitInput(searchInput);
+    if (!parts.length) {
+      setStatus("Entrez une valeur de recherche");
+      return;
+    }
+    setStatus("Recherche Excel...");
+
+    let records = localRecords;
+    if (!localLoaded) {
+      const loaded = await loadLocalRecords();
+      if (!loaded) {
+        setFiltered([]);
+        setSelectedIndex(null);
+        return;
+      }
+      records = loaded;
+    }
+
+    if (!records.length) {
+      setFiltered([]);
+      setSelectedIndex(null);
+      setStatus("Base locale vide");
+      return;
+    }
+
+    const results = filterLocalRecords(records, parts);
+    setFiltered(results);
+    setSelectedIndex(results.length ? 0 : null);
+    setStatus(results.length ? `Resultats: ${results.length}` : "Aucun resultat");
+  };
+
   const connectWithConfig = async (config: OdooConfig, silent = false) => {
     setOdooLoading(true);
     try {
@@ -275,6 +431,28 @@ export default function Home() {
       setSelectedIndex(null);
     } finally {
       setOdooLoading(false);
+    }
+  };
+
+  const handleSearch = () => {
+    if (dataSource === "excel") {
+      void searchLocal();
+      return;
+    }
+    void searchOdoo();
+  };
+
+  const handleSourceChange = (value: "odoo" | "excel") => {
+    setDataSource(value);
+    setFiltered([]);
+    setSelectedIndex(null);
+    if (value === "excel") {
+      setStatus("Mode Excel actif");
+    } else {
+      setStatus(odooConnected ? "Mode Odoo actif" : "Odoo non connecte");
+    }
+    if (value === "excel" && !localLoaded && !localLoading) {
+      void loadLocalRecords();
     }
   };
 
@@ -550,6 +728,19 @@ export default function Home() {
               <span className="pill pill--ghost">EAN, Article ou Nom</span>
             </div>
             <div className="search-row">
+              <label className="sr-only" htmlFor="data-source">
+                Source
+              </label>
+              <select
+                id="data-source"
+                value={dataSource}
+                onChange={(event) =>
+                  handleSourceChange(event.target.value as "odoo" | "excel")
+                }
+              >
+                <option value="odoo">Odoo</option>
+                <option value="excel">Excel (ORCHESTRA_MARGE.xlsx)</option>
+              </select>
               <label className="sr-only" htmlFor="search-type">
                 Type
               </label>
@@ -571,18 +762,33 @@ export default function Home() {
                 onChange={(event) => setSearchInput(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
-                    searchOdoo();
+                    handleSearch();
                   }
                 }}
                 placeholder="3393456827961, CFIFQ7#ROC01"
               />
-              <button type="button" onClick={searchOdoo}>
+              <button type="button" onClick={handleSearch}>
                 Chercher
               </button>
               <button type="button" className="ghost" onClick={clearSearch}>
                 Effacer
               </button>
             </div>
+            {dataSource === "excel" ? (
+              <div className="sheet-row">
+                <span className="sheet-label">
+                  Source: {localMeta?.source || "ORCHESTRA_MARGE.xlsx"}
+                </span>
+                {localMeta?.sheet ? (
+                  <span className="sheet-label">Feuille: {localMeta.sheet}</span>
+                ) : null}
+                {localLoaded ? (
+                  <span className="sheet-label">
+                    {localRecords.length} lignes
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
             <p className="hint">
               Plusieurs valeurs possibles, separees par une virgule.
             </p>
@@ -592,7 +798,10 @@ export default function Home() {
             <div className="card__header">
               <h2>Resultats</h2>
               <div className="card__header-right">
-                {odooLoading ? <LineSpinnerDemo /> : null}
+                {odooLoading || localLoading ? <LineSpinnerDemo /> : null}
+                <span className="pill pill--ghost">
+                  {dataSource === "odoo" ? "Odoo" : "Excel"}
+                </span>
                 <span className="pill">{filtered.length}</span>
               </div>
             </div>
