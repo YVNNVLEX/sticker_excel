@@ -167,8 +167,8 @@ const MODEL_HINTS = [
 const PARTNER_FIELDS = ["partner_id", "customer_id", "client_id", "member_id", "customer"];
 const CODE_FIELDS = ["code", "barcode", "card_number", "number", "name"];
 const BARCODE_PRIORITY = ["barcode", "ean", "ean13", "barcode_number", "code_barre"];
-const EMAIL_FIELDS = ["email", "email_from", "customer_email"];
-const PHONE_FIELDS = ["phone", "mobile", "telephone", "tel", "customer_phone"];
+const EMAIL_FIELDS = ["email", "partner_email", "email_from", "customer_email"];
+const PHONE_FIELDS = ["phone", "mobile", "partner_phone", "telephone", "tel", "customer_phone"];
 const END_DATE_FIELDS = [
   "date_end",
   "date_stop",
@@ -421,19 +421,29 @@ export async function POST(request: Request) {
       );
     }
 
+    const codeField = CODE_FIELDS.find((f) => model.fields.has(f)) ?? null;
+    const partnerField = PARTNER_FIELDS.find((f) => model.fields.has(f)) ?? null;
+    const emailField = EMAIL_FIELDS.find((f) => model.fields.has(f)) ?? null;
+    const phoneField = PHONE_FIELDS.find((f) => model.fields.has(f)) ?? null;
+    const endDateField = END_DATE_FIELDS.find((f) => model.fields.has(f)) ?? null;
+    const statusField = model.fields.has("state")
+      ? "state"
+      : model.fields.has("status")
+        ? "status"
+        : null;
+    const includeActiveField = !statusField && model.fields.has("active");
+
+    // Keep search_read minimal: only fields required for Code, Client, Email, Telephone, Statut, Date fin.
     const requestedFields = [
       "id",
-      ...CODE_FIELDS,
-      ...PARTNER_FIELDS,
-      ...EMAIL_FIELDS,
-      ...PHONE_FIELDS,
-      ...END_DATE_FIELDS,
-      "status",
-      "state",
-      "active",
-    ]
-      .filter((v, i, a) => a.indexOf(v) === i)
-      .filter((f) => f === "id" || model!.fields.has(f));
+      codeField,
+      partnerField,
+      emailField,
+      phoneField,
+      endDateField,
+      statusField,
+      includeActiveField ? "active" : null,
+    ].filter((f): f is string => Boolean(f));
 
     const isDev = process.env.NODE_ENV !== "production";
 
@@ -492,7 +502,7 @@ export async function POST(request: Request) {
 
     if (isDev) {
       console.log("[club-card] model", model.model);
-      console.log("[club-card] fields", Array.from(model.fields).sort());
+      console.log("[club-card] requestedFields", requestedFields);
       console.log("[club-card] domain", JSON.stringify(domain));
       console.log("[club-card] barcodeField", barcodeField);
       console.log("[club-card] order", order);

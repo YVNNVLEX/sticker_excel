@@ -1,13 +1,14 @@
 ﻿"use client";
 
+import Image from "next/image";
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useState } from "react";
+import productIllustration from "@/app/assets/svg_illustration.png";
 import { LoadingIndicator } from "@/components/application/loading-indicator/loading-indicator";
-import { printClubLabel } from "@/lib/club-card/print";
+import { printClubLabels } from "@/lib/club-card/print";
 import type { ClubCard, ClubSuggestion, ColumnDef, ColumnStat } from "@/lib/club-card/types";
 import { ODOO_SESSION_KEY, DEFAULT_ODOO_CONFIG, CLUB_PAGE_SIZE } from "@/lib/odoo/constants";
 import type { OdooConfig } from "@/lib/odoo/types";
-import type { PrinterStatus } from "@/lib/printer/types";
 import {
   normalizeText,
   formatPrice,
@@ -32,6 +33,15 @@ type LocalMeta = {
   source?: string;
   sheet?: string;
   defaultFile?: string;
+};
+
+type ClubCardsApiResponse = {
+  cards?: unknown[];
+  total?: unknown;
+  moduleInfo?: unknown;
+  suggestions?: unknown[];
+  has_more?: unknown;
+  message?: unknown;
 };
 
 const DEFAULT_ODOO_CONFIG_STATE: OdooConfig = {
@@ -94,15 +104,12 @@ export default function Home() {
   const [filtered, setFiltered] = useState<RecordItem[]>([]);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [status, setStatus] = useState("Connexion Odoo en cours...");
-  const [printerStatus, setPrinterStatus] = useState<PrinterStatus>({
-    available: false,
-    status: "unknown",
-  });
   const [searchType, setSearchType] = useState<"EAN" | "Article" | "Nom">(
     "EAN",
   );
   const [dataSource, setDataSource] = useState<"odoo" | "excel">("odoo");
   const [searchInput, setSearchInput] = useState("");
+  const [hasProductSearch, setHasProductSearch] = useState(false);
   const [localRecords, setLocalRecords] = useState<RecordItem[]>([]);
   const [localMeta, setLocalMeta] = useState<LocalMeta | null>(null);
   const [localLoaded, setLocalLoaded] = useState(false);
@@ -125,23 +132,7 @@ export default function Home() {
   const [clubOffset, setClubOffset] = useState(0);
   const [clubHasMore, setClubHasMore] = useState(false);
   const [clubSuggestions, setClubSuggestions] = useState<ClubSuggestion[]>([]);
-
-  const printerLabel = useMemo(() => {
-    switch (printerStatus.status) {
-      case "ready":
-        return "Imprimante connectee";
-      case "offline":
-        return "Imprimante hors ligne";
-      case "error":
-        return "Erreur imprimante";
-      case "unsupported":
-        return "Detection non supportee";
-      case "unavailable":
-        return "Imprimante non detectee";
-      default:
-        return "Statut inconnu";
-    }
-  }, [printerStatus.status]);
+  const [clubSelectedIds, setClubSelectedIds] = useState<Set<number>>(new Set());
 
   const clubColumns = useMemo<ColumnDef[]>(
     () => [
@@ -166,6 +157,23 @@ export default function Home() {
 
   const filteredClubCards = orderedClubCards;
 
+  const printableClubCards = useMemo(
+    () =>
+      filteredClubCards.filter((card) =>
+        Boolean(normalizeText(card.barcode || card.code)),
+      ),
+    [filteredClubCards],
+  );
+
+  const selectedClubCards = useMemo(
+    () => printableClubCards.filter((card) => clubSelectedIds.has(card.id)),
+    [printableClubCards, clubSelectedIds],
+  );
+
+  const allPrintableClubCardsSelected =
+    printableClubCards.length > 0 &&
+    printableClubCards.every((card) => clubSelectedIds.has(card.id));
+
   const clubStats = useMemo(
     () => computeColumnStats(filteredClubCards, clubColumns),
     [filteredClubCards, clubColumns],
@@ -179,34 +187,31 @@ export default function Home() {
 
   const hiddenColumns = clubColumns.length - visibleColumns.length;
   const partialData = filteredClubCards.length > 0 && hiddenColumns > 0;
+  const emptyProductMessage = hasProductSearch
+    ? "produit inconnue"
+    : "Commmencer votre recherche produit";
 
   useEffect(() => {
-    let active = true;
-    const fetchStatus = async () => {
-      try {
-        const response = await fetch("/api/printer-status", {
-          cache: "no-store",
-        });
-        if (!response.ok) {
-          throw new Error("Printer status error");
-        }
-        const data = (await response.json()) as PrinterStatus;
-        if (active) {
-          setPrinterStatus(data);
-        }
-      } catch {
-        if (active) {
-          setPrinterStatus({ available: false, status: "unavailable" });
+    setClubSelectedIds((prev) => {
+      if (!prev.size) return prev;
+      const printableIds = new Set(printableClubCards.map((card) => card.id));
+      let changed = false;
+      for (const id of prev) {
+        if (!printableIds.has(id)) {
+          changed = true;
+          break;
         }
       }
-    };
-    fetchStatus();
-    const timer = window.setInterval(fetchStatus, 5000);
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
-  }, []);
+      if (!changed) return prev;
+      const next = new Set<number>();
+      for (const id of prev) {
+        if (printableIds.has(id)) {
+          next.add(id);
+        }
+      }
+      return next;
+    });
+  }, [printableClubCards]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -229,6 +234,7 @@ export default function Home() {
     setSearchInput("");
     setFiltered([]);
     setSelectedIndex(null);
+    setHasProductSearch(false);
     setStatus("Recherche effacee");
   };
 
@@ -323,9 +329,11 @@ export default function Home() {
   const searchLocal = async () => {
     const parts = splitInput(searchInput);
     if (!parts.length) {
+      setHasProductSearch(false);
       setStatus("Entrez une valeur de recherche");
       return;
     }
+    setHasProductSearch(true);
     setStatus("Recherche Excel...");
 
     let records = localRecords;
@@ -390,6 +398,7 @@ export default function Home() {
   const searchOdoo = async () => {
     const parts = splitInput(searchInput);
     if (!parts.length) {
+      setHasProductSearch(false);
       setStatus("Entrez une valeur de recherche");
       return;
     }
@@ -397,6 +406,7 @@ export default function Home() {
       setStatus("Odoo non connecte");
       return;
     }
+    setHasProductSearch(true);
     setOdooLoading(true);
     setStatus("Recherche Odoo...");
     try {
@@ -446,6 +456,7 @@ export default function Home() {
     setDataSource(value);
     setFiltered([]);
     setSelectedIndex(null);
+    setHasProductSearch(false);
     if (value === "excel") {
       setStatus("Mode Excel actif");
     } else {
@@ -454,6 +465,45 @@ export default function Home() {
     if (value === "excel" && !localLoaded && !localLoading) {
       void loadLocalRecords();
     }
+  };
+
+  const requestClubCardsPage = async (options: {
+    offset: number;
+    limit: number;
+    query: string;
+  }) => {
+    const response = await fetch("/api/odoo/club-card", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        baseUrl: odooConfig.baseUrl,
+        db: odooConfig.db,
+        username: odooConfig.username,
+        password: odooConfig.password,
+        limit: options.limit,
+        offset: options.offset,
+        q: options.query || undefined,
+      }),
+    });
+
+    const data = (await readJsonResponse(response)) as ClubCardsApiResponse;
+    if (!response.ok) {
+      const message =
+        typeof data.message === "string" ? data.message : "Erreur Club Card";
+      throw new Error(message);
+    }
+
+    const cards = Array.isArray(data.cards) ? (data.cards as ClubCard[]) : [];
+    const total = typeof data.total === "number" ? data.total : null;
+    const moduleInfo = Array.isArray(data.moduleInfo) ? data.moduleInfo : [];
+    const suggestions = Array.isArray(data.suggestions)
+      ? (data.suggestions as ClubSuggestion[])
+      : [];
+    const hasMore =
+      data.has_more === true ||
+      (typeof total === "number" && total > options.offset + cards.length);
+
+    return { cards, total, moduleInfo, suggestions, hasMore };
   };
 
   const fetchClubCards = async (options: {
@@ -479,51 +529,12 @@ export default function Home() {
     );
 
     try {
-      const response = await fetch("/api/odoo/club-card", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          baseUrl: odooConfig.baseUrl,
-          db: odooConfig.db,
-          username: odooConfig.username,
-          password: odooConfig.password,
-          limit: CLUB_PAGE_SIZE,
+      const { cards, total, moduleInfo, suggestions, hasMore } =
+        await requestClubCardsPage({
           offset: nextOffset,
-          q: query || undefined,
-        }),
-      });
-
-      const data = await readJsonResponse(response);
-      if (!response.ok) {
-        const message =
-          typeof data.message === "string" ? data.message : "Erreur Club Card";
-        throw new Error(message);
-      }
-
-      const cards = Array.isArray((data as { cards?: unknown[] }).cards)
-        ? ((data as { cards?: unknown[] }).cards as ClubCard[])
-        : [];
-
-      const total =
-        typeof (data as { total?: unknown }).total === "number"
-          ? (data as { total?: number }).total
-          : null;
-
-      const moduleInfo =
-        Array.isArray((data as { moduleInfo?: unknown }).moduleInfo) &&
-        (data as { moduleInfo?: unknown[] }).moduleInfo
-          ? ((data as { moduleInfo?: unknown[] }).moduleInfo as unknown[])
-          : [];
-
-      const suggestions = Array.isArray(
-        (data as { suggestions?: unknown[] }).suggestions,
-      )
-        ? ((data as { suggestions?: unknown[] }).suggestions as ClubSuggestion[])
-        : [];
-
-      const hasMore =
-        (data as { has_more?: unknown }).has_more === true ||
-        (typeof total === "number" && total > nextOffset + cards.length);
+          limit: CLUB_PAGE_SIZE,
+          query,
+        });
 
       const nextCount = append ? clubCards.length + cards.length : cards.length;
 
@@ -564,6 +575,139 @@ export default function Home() {
       append: true,
       offsetOverride: clubOffset + CLUB_PAGE_SIZE,
     });
+  };
+
+  const toggleClubCardSelection = (id: number) => {
+    setClubSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const toggleAllPrintableClubCards = () => {
+    setClubSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allPrintableClubCardsSelected) {
+        printableClubCards.forEach((card) => next.delete(card.id));
+      } else {
+        printableClubCards.forEach((card) => next.add(card.id));
+      }
+      return next;
+    });
+  };
+
+  const handlePrintSelectedClubCards = () => {
+    if (!selectedClubCards.length) {
+      setClubStatus("Selectionnez au moins une carte");
+      return;
+    }
+    printClubLabels(
+      selectedClubCards.map((card) => ({
+        code: card.code,
+        barcode: card.barcode,
+        client: card.client,
+        date_fin: card.date_fin,
+      })),
+      setClubStatus,
+    );
+  };
+
+  const handlePrintAllClubCards = async () => {
+    if (!odooConnected) {
+      setClubStatus("Odoo non connecte");
+      return;
+    }
+    if (clubLoading) return;
+
+    const query = clubFilter.trim();
+    const fetchLimit = 100;
+    const allCards: ClubCard[] = [];
+    const seenIds = new Set<number>();
+    let offset = 0;
+    let total: number | null = null;
+    let hasMore = true;
+    let moduleInfo: unknown[] = [];
+    const maxPages = 500;
+    let pageCount = 0;
+
+    setClubLoading(true);
+    setClubStatus("Chargement complet des cartes Club Card...");
+
+    try {
+      while (hasMore && pageCount < maxPages) {
+        pageCount += 1;
+        const page = await requestClubCardsPage({
+          offset,
+          limit: fetchLimit,
+          query,
+        });
+
+        if (total == null && typeof page.total === "number") {
+          total = page.total;
+        }
+        if (!moduleInfo.length && page.moduleInfo.length) {
+          moduleInfo = page.moduleInfo;
+        }
+
+        for (const card of page.cards) {
+          if (seenIds.has(card.id)) continue;
+          seenIds.add(card.id);
+          allCards.push(card);
+        }
+
+        setClubStatus(
+          `Chargement complet ${allCards.length}/${total ?? "?"}...`,
+        );
+
+        if (!page.cards.length) break;
+
+        offset += page.cards.length;
+        hasMore = page.hasMore;
+      }
+
+      const effectiveTotal = total ?? allCards.length;
+      const hasPotentiallyMissedPages = hasMore && pageCount >= maxPages;
+      if (hasPotentiallyMissedPages) {
+        throw new Error("Volume trop important, impression interrompue");
+      }
+
+      const printableAllCards = allCards.filter((card) =>
+        Boolean(normalizeText(card.barcode || card.code)),
+      );
+
+      setClubCards(allCards);
+      setClubTotal(effectiveTotal);
+      setClubOffset(0);
+      setClubHasMore(false);
+      setClubModuleInfo(moduleInfo);
+      setClubSuggestions([]);
+
+      if (!printableAllCards.length) {
+        setClubStatus("Aucune carte imprimable");
+        return;
+      }
+
+      printClubLabels(
+        printableAllCards.map((card) => ({
+          code: card.code,
+          barcode: card.barcode,
+          client: card.client,
+          date_fin: card.date_fin,
+        })),
+        setClubStatus,
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Erreur chargement Club Card";
+      setClubStatus(message);
+    } finally {
+      setClubLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -699,16 +843,6 @@ export default function Home() {
         <div className="hero__content">
           <div className="hero__kicker-row">
             <div className="kicker">Etiquettes plus</div>
-            <div
-              className="printer-status printer-status--hero"
-              data-status={printerStatus.status}
-            >
-              <span className="printer-dot" aria-hidden="true" />
-              <span>{printerLabel}</span>
-              {printerStatus.name ? (
-                <span className="printer-name">{printerStatus.name}</span>
-              ) : null}
-            </div>
           </div>
           <h1>Recherche rapide, etiquette claire, impression directe.</h1>
           <p>
@@ -722,7 +856,7 @@ export default function Home() {
 
       <main className="layout">
         <section className="panel">
-          <div className="card">
+          <div className="card card--full product-search-card">
             <div className="card__header">
               <h2>Recherche</h2>
               <span className="pill pill--ghost">EAN, Article ou Nom</span>
@@ -792,9 +926,7 @@ export default function Home() {
             <p className="hint">
               Plusieurs valeurs possibles, separees par une virgule.
             </p>
-          </div>
-
-          <div className="card">
+            <div className="product-search-card__divider" />
             <div className="card__header">
               <h2>Resultats</h2>
               <div className="card__header-right">
@@ -805,114 +937,58 @@ export default function Home() {
                 <span className="pill">{filtered.length}</span>
               </div>
             </div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Article</th>
-                    <th>Nom</th>
-                    <th>EAN</th>
-                    <th>Prix Club</th>
-                    <th>Prix Public</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.map((record, index) => (
-                    <tr
-                      key={`${record.row}-${record.ean}-${index}`}
-                      className={index === selectedIndex ? "selected" : ""}
-                      onClick={() => setSelectedIndex(index)}
-                    >
-                      <td>{record.article || "-"}</td>
-                      <td>{record.name || "-"}</td>
-                      <td>{record.ean || "-"}</td>
-                      <td className="price">{formatPrice(record.prixClub)}</td>
-                      <td>{formatPrice(record.prixPublic)}</td>
+            {filtered.length ? (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Article</th>
+                      <th>Nom</th>
+                      <th>EAN</th>
+                      <th>Prix Club</th>
+                      <th>Prix Public</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {filtered.map((record, index) => (
+                      <tr
+                        key={`${record.row}-${record.ean}-${index}`}
+                        className={index === selectedIndex ? "selected" : ""}
+                        onClick={() => setSelectedIndex(index)}
+                      >
+                        <td>{record.article || "-"}</td>
+                        <td>{record.name || "-"}</td>
+                        <td>{record.ean || "-"}</td>
+                        <td className="price">{formatPrice(record.prixClub)}</td>
+                        <td>{formatPrice(record.prixPublic)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="product-empty-card">
+                <div className="product-empty-state">
+                  <Image
+                    src={productIllustration}
+                    alt="Illustration recherche produit"
+                    className="product-empty-image"
+                  />
+                  <p className="product-empty-text">{emptyProductMessage}</p>
+                </div>
+              </div>
+            )}
+            <div className="actions product-search-card__actions">
+              <button type="button" onClick={handlePrintSelected}>
+                Imprimer selection
+              </button>
+              <button type="button" className="ghost" onClick={handlePrintAll}>
+                Imprimer tout
+              </button>
+              <button type="button" className="ghost" onClick={downloadLabels}>
+                Telecharger etiquettes
+              </button>
             </div>
-          </div>
-
-          <div className="card actions">
-            <button type="button" onClick={handlePrintSelected}>
-              Imprimer selection
-            </button>
-            <button type="button" className="ghost" onClick={handlePrintAll}>
-              Imprimer tout
-            </button>
-            <button type="button" className="ghost" onClick={downloadLabels}>
-              Telecharger etiquettes
-            </button>
-          </div>
-
-          <div className="card">
-            <div className="card__header">
-              <h2>Format etiquette</h2>
-              <span className="pill pill--ghost">Impression</span>
-            </div>
-            <div className="size-row">
-              <div className="field">
-                <label htmlFor="label-width">Largeur (mm)</label>
-                <input
-                  id="label-width"
-                  type="number"
-                  min="10"
-                  step="1"
-                  value={labelWidth}
-                  onChange={(event) =>
-                    Number.isFinite(Number(event.target.value)) &&
-                    Number(event.target.value) > 0 &&
-                    setLabelWidth(Number(event.target.value))
-                  }
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="label-height">Hauteur (mm)</label>
-                <input
-                  id="label-height"
-                  type="number"
-                  min="10"
-                  step="1"
-                  value={labelHeight}
-                  onChange={(event) =>
-                    Number.isFinite(Number(event.target.value)) &&
-                    Number(event.target.value) > 0 &&
-                    setLabelHeight(Number(event.target.value))
-                  }
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="print-offset-x">Decalage X (mm)</label>
-                <input
-                  id="print-offset-x"
-                  type="number"
-                  step="0.1"
-                  value={printOffsetX}
-                  onChange={(event) =>
-                    Number.isFinite(Number(event.target.value)) &&
-                    setPrintOffsetX(Number(event.target.value))
-                  }
-                />
-              </div>
-              <div className="field">
-                <label htmlFor="print-offset-y">Decalage Y (mm)</label>
-                <input
-                  id="print-offset-y"
-                  type="number"
-                  step="0.1"
-                  value={printOffsetY}
-                  onChange={(event) =>
-                    Number.isFinite(Number(event.target.value)) &&
-                    setPrintOffsetY(Number(event.target.value))
-                  }
-                />
-              </div>
-            </div>
-            <p className="hint">
-              Ces valeurs sont utilisees pour l&apos;impression et le telechargement.
-            </p>
           </div>
         </section>
 
@@ -964,51 +1040,65 @@ export default function Home() {
               <table>
                 <thead>
                   <tr>
+                    <th className="club-check-col">
+                      <input
+                        type="checkbox"
+                        checked={allPrintableClubCardsSelected}
+                        onChange={toggleAllPrintableClubCards}
+                        disabled={!printableClubCards.length}
+                        aria-label={
+                          allPrintableClubCardsSelected
+                            ? "Tout deselectionner"
+                            : "Tout selectionner"
+                        }
+                      />
+                    </th>
                     {visibleColumns.map((col) => (
                       <th key={col.key}>{col.label}</th>
                     ))}
-                    <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredClubCards.length === 0 ? (
-                    <tr>
+                    <tr className="club-empty-row">
                       <td colSpan={(visibleColumns.length || 1) + 1} className="empty-row">
-                        Aucun client Club Card
+                        <div className="product-empty-state">
+                          <Image
+                            src={productIllustration}
+                            alt="Illustration cartes club indisponibles"
+                            className="product-empty-image"
+                          />
+                          <p className="product-empty-text">
+                            Aucune carte Club Card disponible
+                          </p>
+                        </div>
                       </td>
                     </tr>
                   ) : (
-                    filteredClubCards.map((card) => (
-                      <tr key={`${card.id}-${card.code}`}>
-                        {visibleColumns.map((col) => {
-                          const raw = col.accessor(card);
-                          const formatted = col.format
-                            ? col.format(raw)
-                            : normalizeText(raw);
-                          return <td key={col.key}>{formatted}</td>;
-                        })}
-                        <td>
-                          <button
-                            type="button"
-                            className="ghost"
-                            disabled={!normalizeText(card.barcode || card.code)}
-                            title={
-                              normalizeText(card.barcode || card.code)
-                                ? "Imprimer l'etiquette"
-                                : "Code manquant"
-                            }
-                            onClick={() =>
-                              printClubLabel(
-                                { code: card.code, barcode: card.barcode, client: card.client },
-                                setClubStatus,
-                              )
-                            }
-                          >
-                            Imprimer
-                          </button>
-                        </td>
-                      </tr>
-                    ))
+                    filteredClubCards.map((card) => {
+                      const canPrint = Boolean(normalizeText(card.barcode || card.code));
+                      const isSelected = clubSelectedIds.has(card.id);
+                      return (
+                        <tr key={`${card.id}-${card.code}`}>
+                          <td className="club-check-col">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleClubCardSelection(card.id)}
+                              disabled={!canPrint}
+                              aria-label={`Selectionner ${normalizeText(card.client) || "client"}`}
+                            />
+                          </td>
+                          {visibleColumns.map((col) => {
+                            const raw = col.accessor(card);
+                            const formatted = col.format
+                              ? col.format(raw)
+                              : normalizeText(raw);
+                            return <td key={col.key}>{formatted}</td>;
+                          })}
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -1064,9 +1154,100 @@ export default function Home() {
                 </div>
               ) : null}
             </div>
+            <div className="club-card__print-actions club-card__print-actions--bottom">
+              <button
+                type="button"
+                className="club-print-selection"
+                onClick={handlePrintSelectedClubCards}
+                disabled={!selectedClubCards.length || clubLoading}
+              >
+                Imprimer selection
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => void handlePrintAllClubCards()}
+                disabled={!odooConnected || clubLoading}
+              >
+                Imprimer tout
+              </button>
+              <span className="meta-muted">
+                Selection: {selectedClubCards.length} / {printableClubCards.length}
+              </span>
+            </div>
           </div>
         </section>
       </main>
+
+      <section className="format-section">
+        <div className="card card--full format-section__card">
+          <div className="card__header">
+            <h2>Format etiquette</h2>
+            <span className="pill pill--ghost">Impression</span>
+          </div>
+          <div className="size-row">
+            <div className="field">
+              <label htmlFor="label-width">Largeur (mm)</label>
+              <input
+                id="label-width"
+                type="number"
+                min="10"
+                step="1"
+                value={labelWidth}
+                onChange={(event) =>
+                  Number.isFinite(Number(event.target.value)) &&
+                  Number(event.target.value) > 0 &&
+                  setLabelWidth(Number(event.target.value))
+                }
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="label-height">Hauteur (mm)</label>
+              <input
+                id="label-height"
+                type="number"
+                min="10"
+                step="1"
+                value={labelHeight}
+                onChange={(event) =>
+                  Number.isFinite(Number(event.target.value)) &&
+                  Number(event.target.value) > 0 &&
+                  setLabelHeight(Number(event.target.value))
+                }
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="print-offset-x">Decalage X (mm)</label>
+              <input
+                id="print-offset-x"
+                type="number"
+                step="0.1"
+                value={printOffsetX}
+                onChange={(event) =>
+                  Number.isFinite(Number(event.target.value)) &&
+                  setPrintOffsetX(Number(event.target.value))
+                }
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="print-offset-y">Decalage Y (mm)</label>
+              <input
+                id="print-offset-y"
+                type="number"
+                step="0.1"
+                value={printOffsetY}
+                onChange={(event) =>
+                  Number.isFinite(Number(event.target.value)) &&
+                  setPrintOffsetY(Number(event.target.value))
+                }
+              />
+            </div>
+          </div>
+          <p className="hint">
+            Ces valeurs sont utilisees pour l&apos;impression et le telechargement.
+          </p>
+        </div>
+      </section>
 
       <div
         id="print-area"

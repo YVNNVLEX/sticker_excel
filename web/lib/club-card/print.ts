@@ -3,7 +3,20 @@
 import JsBarcode from "jsbarcode";
 import { escapeHtml, normalizeText } from "@/lib/utils/format";
 
-export type ClubLabelPayload = { code?: string; barcode?: string; client?: string };
+export type ClubLabelPayload = {
+  code?: string;
+  barcode?: string;
+  client?: string;
+  date_fin?: unknown;
+  expirationDate?: unknown;
+};
+
+type PrintableClubLabel = {
+  code: string;
+  client: string;
+  barcodeSvg: string;
+  expiration: string;
+};
 
 function renderBarcodeSvg(barcode: string) {
   try {
@@ -19,7 +32,7 @@ function renderBarcodeSvg(barcode: string) {
       margin: 0,
     });
 
-    // Laisse le CSS gérer l’affichage final, mais on garde des attributs safe
+    // Keep final sizing in CSS, but ensure safe SVG dimensions.
     svg.setAttribute("width", "100%");
     svg.setAttribute("height", "100%");
 
@@ -29,20 +42,72 @@ function renderBarcodeSvg(barcode: string) {
   }
 }
 
-function buildSingleClubLabelHtml({
+function toPrintableLabel(card: ClubLabelPayload): PrintableClubLabel | null {
+  const client = normalizeText(card.client) || "Client";
+  const code = normalizeText(card.code);
+  const barcodeValue = normalizeText(card.barcode) || code;
+  const expirationRaw = card.date_fin ?? card.expirationDate;
+  if (!barcodeValue) {
+    return null;
+  }
+
+  return {
+    code: barcodeValue,
+    client,
+    barcodeSvg: renderBarcodeSvg(barcodeValue),
+    expiration: formatExpirationDate(expirationRaw),
+  };
+}
+
+function formatExpirationDate(value: unknown) {
+  const text = normalizeText(value);
+  if (!text) return "-";
+
+  const isoMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    return `${day}/${month}/${year}`;
+  }
+
+  const parsed = new Date(text);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toLocaleDateString("fr-FR");
+  }
+
+  return text;
+}
+
+function buildLabelPageHtml({
   code,
   client,
   barcodeSvg,
-}: ClubLabelPayload & { barcodeSvg?: string }) {
+  expiration,
+}: PrintableClubLabel) {
   const safeCode = escapeHtml(normalizeText(code) || "-");
   const safeClient = escapeHtml(normalizeText(client) || "Client");
+  const safeExpiration = escapeHtml(normalizeText(expiration) || "-");
+
+  return `<div class="page-shell">
+    <div class="page">
+      <div class="label">
+        <div class="client">${safeClient}</div>
+        ${barcodeSvg ? `<div class="barcode">${barcodeSvg}</div>` : ""}
+        <div class="barcodeText">${safeCode}</div>
+        <div class="expiry">Expire le : ${safeExpiration}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function buildClubLabelsHtml(cards: PrintableClubLabel[]) {
+  const pages = cards.map((card) => buildLabelPageHtml(card)).join("");
 
   return `<!doctype html>
 <html lang="fr">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Etiquette Club Card</title>
+    <title>Etiquettes Club Card</title>
     <style>
       @page { size: 80mm 50mm; margin: 0; }
 
@@ -52,13 +117,9 @@ function buildSingleClubLabelHtml({
         print-color-adjust: exact;
       }
 
-      /* IMPORTANT: forcer strictement 1 page */
       html, body {
-        width: 80mm;
-        height: 50mm;
         margin: 0;
         padding: 0;
-        overflow: hidden !important;
         background: #fff;
       }
 
@@ -66,26 +127,24 @@ function buildSingleClubLabelHtml({
         font-family: system-ui, -apple-system, Segoe UI, sans-serif;
       }
 
-      /* Neutralise toute règle de saut de page injectée */
-      * {
-        page-break-before: auto !important;
-        page-break-after: auto !important;
-        page-break-inside: avoid !important;
-        break-before: auto !important;
-        break-after: auto !important;
-        break-inside: avoid !important;
+      .page-shell {
+        width: 80mm;
+        height: 50mm;
+        overflow: hidden;
+        page-break-after: always;
+        break-after: page;
+      }
+
+      .page-shell:last-child {
+        page-break-after: auto;
+        break-after: auto;
       }
 
       .page {
         width: 80mm;
         height: 50mm;
-        padding: 3mm 4mm; /* compact */
-        overflow: hidden !important;
-
-        page-break-after: auto !important;
-        break-after: auto !important;
-        page-break-before: auto !important;
-        break-before: auto !important;
+        padding: 3mm 4mm;
+        overflow: hidden;
       }
 
       .label {
@@ -94,22 +153,15 @@ function buildSingleClubLabelHtml({
         text-align: center;
       }
 
-      /* SUPPRIME l’espace au-dessus: pas de justify-content:center, on contrôle via marges */
       .client {
         margin: 0;
         padding: 0;
-
         font-size: 20px;
         font-weight: 900;
         color: #111;
         line-height: 1.05;
-
-        /* espace au-dessus (réduit) */
         margin-top: 2mm;
-
-        /* espace entre nom et barcode (réduit) */
         margin-bottom: 1.2mm;
-
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -120,93 +172,47 @@ function buildSingleClubLabelHtml({
         margin: 0;
         padding: 0;
         display: block;
-
-        break-inside: avoid !important;
-        page-break-inside: avoid !important;
       }
 
       .barcode svg {
         display: block;
         width: 100%;
         max-width: 260px;
-        height: 18mm;      /* fixe => stable */
+        height: 18mm;
         margin: 0 auto;
-
-        break-inside: avoid !important;
-        page-break-inside: avoid !important;
       }
 
       .barcodeText {
         margin: 0;
         padding: 0;
-
-        /* espace sous barcode */
         margin-top: 1mm;
-
         font-size: 11px;
         font-weight: 800;
         letter-spacing: 0.12em;
         color: #444;
         line-height: 1;
+      }
 
-        break-inside: avoid !important;
-        page-break-inside: avoid !important;
+      .expiry {
+        margin: 0;
+        padding: 0;
+        margin-top: 1.2mm;
+        font-size: 10px;
+        font-weight: 800;
+        color: #d62828;
+        line-height: 1.1;
       }
     </style>
   </head>
   <body>
-    <div class="page">
-      <div class="label">
-        <div class="client">${safeClient}</div>
-        ${barcodeSvg ? `<div class="barcode">${barcodeSvg}</div>` : ""}
-        <div class="barcodeText">${safeCode}</div>
-      </div>
-    </div>
-
-    <script>
-      // Anti "2e page blanche" : si overflow de 1px, on réduit très légèrement
-      window.onload = () => {
-        try {
-          const root = document.documentElement;
-          const body = document.body;
-
-          // Fix police/SVG: laisse le rendu se stabiliser
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              if (body.scrollHeight > root.clientHeight) {
-                body.style.zoom = "0.99";
-              }
-            });
-          });
-        } catch (e) {}
-      };
-    </script>
+    ${pages}
   </body>
 </html>`;
 }
 
-export function printClubLabel(
-  card: ClubLabelPayload,
-  setStatus?: (message: string) => void,
-) {
-  const client = normalizeText(card.client) || "Client";
-  const code = normalizeText(card.code);
-  const barcodeValue = normalizeText(card.barcode) || code;
-
-  if (!barcodeValue) {
-    setStatus?.("Code manquant");
-    return;
-  }
-
-  const barcodeSvg = renderBarcodeSvg(barcodeValue);
-  const html = buildSingleClubLabelHtml({
-    code: barcodeValue,
-    client,
-    barcodeSvg,
-  });
-
+function printHtml(html: string, setStatus?: (message: string) => void) {
   const schedulePrintPopup = (win: Window) => {
-    // Double RAF: laisse Chrome terminer le layout avant print
+    // Double RAF gives Chromium enough time to finish layout before print.
     win.requestAnimationFrame(() => {
       win.requestAnimationFrame(() => {
         win.focus();
@@ -276,4 +282,30 @@ export function printClubLabel(
     setStatus?.("Popup bloque, utilisation du mode iframe");
     tryIframe();
   }
+}
+
+export function printClubLabels(
+  cards: ClubLabelPayload[],
+  setStatus?: (message: string) => void,
+) {
+  const printable = cards
+    .map((card) => toPrintableLabel(card))
+    .filter((card): card is PrintableClubLabel => Boolean(card));
+
+  if (!printable.length) {
+    setStatus?.("Code manquant");
+    return;
+  }
+
+  const html = buildClubLabelsHtml(printable);
+  setStatus?.(`Preparation impression Club Card (${printable.length})...`);
+  printHtml(html, setStatus);
+  setStatus?.(`Impression Club Card (${printable.length})...`);
+}
+
+export function printClubLabel(
+  card: ClubLabelPayload,
+  setStatus?: (message: string) => void,
+) {
+  printClubLabels([card], setStatus);
 }
